@@ -28,6 +28,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch_qaic
 import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator, DistributedType
@@ -1234,12 +1235,16 @@ def main(args):
             "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
         )
 
-    vae.to(accelerator.device, dtype=torch.float32)
+    offload_device = "cpu"
+    vae.to(offload_device, dtype=torch.float32)
     transformer.to(accelerator.device, dtype=weight_dtype)
-    text_encoder_one.to(accelerator.device, dtype=weight_dtype)
-    text_encoder_two.to(accelerator.device, dtype=weight_dtype)
-    text_encoder_three.to(accelerator.device, dtype=weight_dtype)
+    text_encoder_one.to(offload_device, dtype=weight_dtype)
+    text_encoder_two.to(offload_device, dtype=weight_dtype)
+    text_encoder_three.to(offload_device, dtype=weight_dtype)
+    print("--", accelerator.device)
 
+
+    
     if args.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
         if args.train_text_encoder:
@@ -1594,7 +1599,7 @@ def main(args):
         for batch in tqdm(train_dataloader, desc="Caching latents"):
             with torch.no_grad():
                 batch["pixel_values"] = batch["pixel_values"].to(
-                    accelerator.device, non_blocking=True, dtype=weight_dtype
+                    "cpu", non_blocking=True, dtype=weight_dtype
                 )
                 latents_cache.append(vae.encode(batch["pixel_values"]).latent_dist)
 
@@ -1760,7 +1765,7 @@ def main(args):
                 if args.cache_latents:
                     model_input = latents_cache[step].sample()
                 else:
-                    pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
+                    pixel_values = batch["pixel_values"].to("cpu", dtype=vae.dtype)
                     model_input = vae.encode(pixel_values).latent_dist.sample()
 
                 model_input = (model_input - vae_config_shift_factor) * vae_config_scaling_factor
@@ -1787,6 +1792,14 @@ def main(args):
                 sigmas = get_sigmas(timesteps, n_dim=model_input.ndim, dtype=model_input.dtype)
                 noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
 
+                import pdb; pdb.set_trace()
+                print(f"noisy_model_input", noisy_model_input.device, noisy_model_input.shape)
+                print(f"timesteps", timesteps.device, timesteps.shape)
+                print(f"pooled_prompt_embeds", pooled_prompt_embeds.device, pooled_prompt_embeds.shape)
+                noisy_model_input = noisy_model_input.to(accelerator.device, dtype=transformer.dtype)
+                timesteps = timesteps.to(accelerator.device, dtype=transformer.dtype)
+                prompt_embeds = prompt_embeds.to(accelerator.device, dtype=transformer.dtype)
+                pooled_prompt_embeds = pooled_prompt_embeds.to(accelerator.device, dtype=transformer.dtype)
                 # Predict the noise residual
                 model_pred = transformer(
                     hidden_states=noisy_model_input,
