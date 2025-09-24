@@ -31,9 +31,13 @@ import torch
 import torch_qaic
 import torch.utils.checkpoint
 import transformers
-from accelerate import Accelerator, DistributedType
-from accelerate.logging import get_logger
-from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
+from unittest.mock import Mock
+from torch.utils.tensorboard import SummaryWriter
+# from accelerate import Accelerator, DistributedType
+# from accelerate.logging import get_logger
+# from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
+from accelerate.utils import set_seed
+from accelerate import DistributedType
 from huggingface_hub import create_repo, upload_folder
 from huggingface_hub.utils import insecure_hashlib
 from peft import LoraConfig, set_peft_model_state_dict
@@ -68,7 +72,7 @@ from diffusers.utils import (
 )
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.torch_utils import is_compiled_module
-
+import time
 
 if is_wandb_available():
     import wandb
@@ -76,8 +80,9 @@ if is_wandb_available():
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.36.0.dev0")
 
-logger = get_logger(__name__)
-
+# logger = get_logger(__name__)
+import logging
+logger = logging.getLogger('diffuser')
 
 def save_model_card(
     repo_id: str,
@@ -178,8 +183,39 @@ def load_text_encoders(class_one, class_two, class_three):
     text_encoder_two = class_two.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder_2", revision=args.revision, variant=args.variant
     )
+    text_encoder_three_device_map = {
+        'shared': 2, 
+        'encoder.embed_tokens': 2,
+        'encoder.block.0': 2,
+        'encoder.block.1': 2,
+        'encoder.block.2': 2,
+        'encoder.block.3': 2,
+        'encoder.block.4': 2,
+        'encoder.block.5': 2,
+        'encoder.block.6': 2,
+        'encoder.block.7': 2,
+        'encoder.block.8': 3,
+        'encoder.block.9': 3,
+        'encoder.block.10': 3,
+        'encoder.block.11': 3,
+        'encoder.block.12': 3,
+        'encoder.block.13': 3,
+        'encoder.block.14': 3,
+        'encoder.block.15': 3,
+        'encoder.block.16': 4,
+        'encoder.block.17': 4,
+        'encoder.block.18': 4,
+        'encoder.block.19': 4,
+        'encoder.block.20': 4,
+        'encoder.block.21': 4,
+        'encoder.block.22': 4,
+        'encoder.block.23': 4,
+        'encoder.final_layer_norm': 4,
+        'encoder.dropout': 4
+    }
     text_encoder_three = class_three.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder_3", revision=args.revision, variant=args.variant
+        args.pretrained_model_name_or_path, subfolder="text_encoder_3", revision=args.revision, variant=args.variant, 
+        device_map=text_encoder_three_device_map
     )
     return text_encoder_one, text_encoder_two, text_encoder_three
 
@@ -197,16 +233,23 @@ def log_validation(
         f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
         f" {args.validation_prompt}."
     )
-    pipeline = pipeline.to(accelerator.device)
+    # pipeline = pipeline.to(accelerator.device)
+    # pipeline = pipeline.to("cpu")
     pipeline.set_progress_bar_config(disable=True)
-
+    # print(accelerator.device)
+    # rank = int(os.getenv("LOCAL_RANK", 0))
+    # device = f"qaic:{rank}"
+    # pipeline.transformer.to(device)
+    # pipeline.transformer.to(accelerator.device)
+    # pipeline.transformer = accelerator.prepare(accelerator.unwrap_model(pipeline.transformer).to(accelerator.device))
     # run inference
-    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed is not None else None
+    # generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed is not None else None
+    generator = torch.Generator(device="cpu").manual_seed(args.seed) if args.seed is not None else None
     # autocast_ctx = torch.autocast(accelerator.device.type) if not is_final_validation else nullcontext()
     autocast_ctx = nullcontext()
 
     with autocast_ctx:
-        images = [pipeline(**pipeline_args, generator=generator).images[0] for _ in range(args.num_validation_images)]
+        images = [pipeline(**pipeline_args, generator=generator, num_inference_steps=10, height=args.resolution, width=args.resolution).images[0] for _ in range(args.num_validation_images)]
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
@@ -718,6 +761,27 @@ def parse_args(input_args=None):
     return args
 
 
+def get_model_size_mb(model):
+    param_size = 0
+    for param in model.parameters():
+        param_size += param.numel() * param.element_size()
+    buffer_size = 0
+    for buffer in model.buffers():
+        buffer_size += buffer.numel() * buffer.element_size()
+    total_size_mb = (param_size + buffer_size) / (1024 ** 2)
+    return total_size_mb
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters())
+
+
+def print_stats(model, model_name):
+    model_size_mb = get_model_size_mb(model)
+    num_parameters = count_parameters(model)
+    print(f"Model name: {model_name}, Model size: {model_size_mb:.2f} MB, Number of parameters: {num_parameters:,}")
+
+
 class DreamBoothDataset(Dataset):
     """
     A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
@@ -1037,8 +1101,8 @@ def encode_prompt(
             num_images_per_prompt=num_images_per_prompt,
             text_input_ids=text_input_ids_list[i] if text_input_ids_list else None,
         )
-        clip_prompt_embeds_list.append(prompt_embeds)
-        clip_pooled_prompt_embeds_list.append(pooled_prompt_embeds)
+        clip_prompt_embeds_list.append(prompt_embeds.to("cpu"))
+        clip_pooled_prompt_embeds_list.append(pooled_prompt_embeds.to("cpu"))
 
     clip_prompt_embeds = torch.cat(clip_prompt_embeds_list, dim=-1)
     pooled_prompt_embeds = torch.cat(clip_pooled_prompt_embeds_list, dim=-1)
@@ -1056,7 +1120,7 @@ def encode_prompt(
     clip_prompt_embeds = torch.nn.functional.pad(
         clip_prompt_embeds, (0, t5_prompt_embed.shape[-1] - clip_prompt_embeds.shape[-1])
     )
-    prompt_embeds = torch.cat([clip_prompt_embeds, t5_prompt_embed], dim=-2)
+    prompt_embeds = torch.cat([clip_prompt_embeds.to("cpu"), t5_prompt_embed.to("cpu")], dim=-2)
 
     return prompt_embeds, pooled_prompt_embeds
 
@@ -1076,15 +1140,24 @@ def main(args):
 
     logging_dir = Path(args.output_dir, args.logging_dir)
 
-    accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
-    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    accelerator = Accelerator(
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        mixed_precision=args.mixed_precision,
-        log_with=args.report_to,
-        project_config=accelerator_project_config,
-        kwargs_handlers=[kwargs],
-    )
+    # accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
+    # kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    # accelerator = Accelerator(
+    #     gradient_accumulation_steps=args.gradient_accumulation_steps,
+    #     mixed_precision=args.mixed_precision,
+    #     log_with=args.report_to,
+    #     project_config=accelerator_project_config,
+    #     kwargs_handlers=[kwargs],
+    # )
+    accelerator = Mock()
+    accelerator.is_local_main_process = True
+    accelerator.is_main_process = True
+    accelerator.print = print
+    accelerator.num_processes = 1
+    accelerator.distributed_type = "DUMMY"
+    accelerator.mixed_precision = "fp16"
+    accelerator.device = "qaic"
+    accelerator.sync_gradients = False
 
     # Disable AMP for MPS.
     if torch.backends.mps.is_available():
@@ -1100,7 +1173,7 @@ def main(args):
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
-    logger.info(accelerator.state, main_process_only=False)
+    # logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         transformers.utils.logging.set_verbosity_warning()
         diffusers.utils.logging.set_verbosity_info()
@@ -1114,6 +1187,7 @@ def main(args):
 
     # Generate class images if prior preservation is enabled.
     if args.with_prior_preservation:
+        # NOTE: This block is ignored as we are not using this flag.
         class_images_dir = Path(args.class_data_dir)
         if not class_images_dir.exists():
             class_images_dir.mkdir(parents=True)
@@ -1171,17 +1245,20 @@ def main(args):
 
     # Load the tokenizers
     tokenizer_one = CLIPTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path,
+        # args.pretrained_model_name_or_path,
+        "./stabilityaistable-diffusion-3.5-large-turbo/",
         subfolder="tokenizer",
         revision=args.revision,
     )
     tokenizer_two = CLIPTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path,
+        # args.pretrained_model_name_or_path,
+        "./stabilityaistable-diffusion-3.5-large-turbo/",
         subfolder="tokenizer_2",
         revision=args.revision,
     )
     tokenizer_three = T5TokenizerFast.from_pretrained(
-        args.pretrained_model_name_or_path,
+        # args.pretrained_model_name_or_path,
+        "./stabilityaistable-diffusion-3.5-large-turbo/",
         subfolder="tokenizer_3",
         revision=args.revision,
     )
@@ -1211,8 +1288,54 @@ def main(args):
         revision=args.revision,
         variant=args.variant,
     )
+    transformer_device_map = {
+        'pos_embed': 6,
+        'time_text_embed': 6,
+        'context_embedder': 6,
+        'transformer_blocks.0': 6,
+        'transformer_blocks.1': 6,
+        'transformer_blocks.2': 6,
+        'transformer_blocks.3': 6,
+        'transformer_blocks.4': 6,
+        'transformer_blocks.5': 6,
+        'transformer_blocks.6': 6,
+        'transformer_blocks.7': 6,
+        'transformer_blocks.8': 6,
+        'transformer_blocks.9': 6,
+        'transformer_blocks.10': 7,
+        'transformer_blocks.11': 7,
+        'transformer_blocks.12': 7,
+        'transformer_blocks.13': 7,
+        'transformer_blocks.14': 7,
+        'transformer_blocks.15': 7,
+        'transformer_blocks.16': 7,
+        'transformer_blocks.17': 7,
+        'transformer_blocks.18': 7,
+        'transformer_blocks.19': 7,
+        'transformer_blocks.20': 8,
+        'transformer_blocks.21': 8,
+        'transformer_blocks.22': 8,
+        'transformer_blocks.23': 8,
+        'transformer_blocks.24': 8,
+        'transformer_blocks.25': 8,
+        'transformer_blocks.26': 8,
+        'transformer_blocks.27': 8,
+        'transformer_blocks.28': 8,
+        'transformer_blocks.29': 8,
+        'transformer_blocks.30': 9,
+        'transformer_blocks.31': 9,
+        'transformer_blocks.32': 9,
+        'transformer_blocks.33': 9,
+        'transformer_blocks.34': 9,
+        'transformer_blocks.35': 9,
+        'transformer_blocks.36': 9,
+        'transformer_blocks.37': 9,
+        'norm_out': 9,
+        'proj_out': 9
+    }
     transformer = SD3Transformer2DModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="transformer", revision=args.revision, variant=args.variant
+        args.pretrained_model_name_or_path, subfolder="transformer", revision=args.revision, variant=args.variant, 
+        device_map=transformer_device_map
     )
 
     transformer.requires_grad_(False)
@@ -1220,6 +1343,12 @@ def main(args):
     text_encoder_one.requires_grad_(False)
     text_encoder_two.requires_grad_(False)
     text_encoder_three.requires_grad_(False)
+
+    print_stats(transformer, "transformer")
+    print_stats(text_encoder_one, "text_encoder_one")
+    print_stats(text_encoder_two, "text_encoder_two")
+    print_stats(text_encoder_three, "text_encoder_three")
+    print_stats(vae, "vae")
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora transformer) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -1236,15 +1365,19 @@ def main(args):
         )
 
     offload_device = "cpu"
-    vae.to(offload_device, dtype=torch.float32)
-    transformer.to(accelerator.device, dtype=weight_dtype)
-    text_encoder_one.to(offload_device, dtype=weight_dtype)
-    text_encoder_two.to(offload_device, dtype=weight_dtype)
-    text_encoder_three.to(offload_device, dtype=weight_dtype)
-    print("--", accelerator.device)
+    # vae.to(offload_device, dtype=weight_dtype)
+    # transformer.to(accelerator.device, dtype=weight_dtype)
+    # text_encoder_one.to(offload_device, dtype=weight_dtype)
+    # text_encoder_two.to(offload_device, dtype=weight_dtype)
+    # text_encoder_three.to(offload_device, dtype=weight_dtype)
+    text_encoder_one.to("qaic:0", dtype=weight_dtype)
+    text_encoder_two.to("qaic:1", dtype=weight_dtype)
+    # text_encoder_three.to("qaic:2", dtype=weight_dtype)
+    # text_encoder_three: Device 2, 3, 4 
+    vae.to("qaic:5", dtype=weight_dtype)
+    # transformer: Device 6, 7, 8, 9
+    # transformer.to("qaic:4", dtype=weight_dtype)
 
-
-    
     if args.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
         if args.train_text_encoder:
@@ -1291,7 +1424,7 @@ def main(args):
         text_encoder_two.add_adapter(text_lora_config)
 
     def unwrap_model(model):
-        model = accelerator.unwrap_model(model)
+        # model = accelerator.unwrap_model(model)
         model = model._orig_mod if is_compiled_module(model) else model
         return model
 
@@ -1396,8 +1529,8 @@ def main(args):
             # only upcast trainable parameters (LoRA) into fp32
             cast_training_params(models)
 
-    accelerator.register_save_state_pre_hook(save_model_hook)
-    accelerator.register_load_state_pre_hook(load_model_hook)
+    # accelerator.register_save_state_pre_hook(save_model_hook)
+    # accelerator.register_load_state_pre_hook(load_model_hook)
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -1639,9 +1772,11 @@ def main(args):
         assert text_encoder_two is not None
         assert text_encoder_three is not None
     else:
-        transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            transformer, optimizer, train_dataloader, lr_scheduler
-        )
+        pass
+        # transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        #     transformer, optimizer, train_dataloader, lr_scheduler,
+            # device_placement=["qaic:0", "qaic:0", "qaic:0", "qaic:0"]
+        # )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1654,7 +1789,13 @@ def main(args):
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_name = "dreambooth-sd3-lora"
-        accelerator.init_trackers(tracker_name, config=vars(args))
+        # accelerator.init_trackers(tracker_name, config=vars(args))
+        tb_log_dir = os.path.join(args.output_dir, "tb_logs")
+        writer = SummaryWriter(tb_log_dir)
+        tb_tracker = Mock()
+        tb_tracker.name = "tensorboard"
+        tb_tracker.writer = writer
+        accelerator.trackers = [tb_tracker]
 
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -1720,6 +1861,7 @@ def main(args):
     for epoch in range(first_epoch, args.num_train_epochs):
         transformer.train()
         if args.train_text_encoder:
+            # NOTE: Not fixing this.
             text_encoder_one.train()
             text_encoder_two.train()
 
@@ -1727,12 +1869,27 @@ def main(args):
             accelerator.unwrap_model(text_encoder_one).text_model.embeddings.requires_grad_(True)
             accelerator.unwrap_model(text_encoder_two).text_model.embeddings.requires_grad_(True)
 
+        if args.enable_profiling:
+            import torch_qaic.profile as qaic_profile
+            qaic_profile.start_profiling("qaic:0", 1, path="./qaic-dumps/hw-trace-text_encoder_1-model-device-id-0")
+            qaic_profile.start_profiling("qaic:1", 1, path="./qaic-dumps/hw-trace-text_encoder-2-model-device-id-1")
+            qaic_profile.start_profiling("qaic:2", 1, path="./qaic-dumps/hw-trace-text_encoder-3-model-device-id-2")
+            qaic_profile.start_profiling("qaic:3", 1, path="./qaic-dumps/hw-trace-text_encoder-3-model-device-id-3")
+            qaic_profile.start_profiling("qaic:4", 1, path="./qaic-dumps/hw-trace-text_encoder-3-model-device-id-4")
+            qaic_profile.start_profiling("qaic:5", 1, path="./qaic-dumps/hw-trace-vae-model-device-id-5")
+            qaic_profile.start_profiling("qaic:6", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-6")
+            qaic_profile.start_profiling("qaic:7", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-7")
+            qaic_profile.start_profiling("qaic:8", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-8")
+            qaic_profile.start_profiling("qaic:9", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-9")
+                
         for step, batch in enumerate(train_dataloader):
             models_to_accumulate = [transformer]
             if args.train_text_encoder:
                 models_to_accumulate.extend([text_encoder_one, text_encoder_two])
-            with accelerator.accumulate(models_to_accumulate):
+            # with accelerator.accumulate(models_to_accumulate):
+            with nullcontext():
                 prompts = batch["prompts"]
+                print("Prompts: ", prompts)
 
                 # encode batch prompts when custom prompts are provided for each image -
                 if train_dataset.custom_instance_prompts:
@@ -1765,7 +1922,8 @@ def main(args):
                 if args.cache_latents:
                     model_input = latents_cache[step].sample()
                 else:
-                    pixel_values = batch["pixel_values"].to("cpu", dtype=vae.dtype)
+                    pixel_values = batch["pixel_values"].to(vae.device, dtype=vae.dtype)
+                    print(f"Pixel values shape: {pixel_values.shape}")
                     model_input = vae.encode(pixel_values).latent_dist.sample()
 
                 model_input = (model_input - vae_config_shift_factor) * vae_config_scaling_factor
@@ -1790,17 +1948,34 @@ def main(args):
                 # Add noise according to flow matching.
                 # zt = (1 - texp) * x + texp * z1
                 sigmas = get_sigmas(timesteps, n_dim=model_input.ndim, dtype=model_input.dtype)
+                # Sigmas is in qaic:0
+                # model_input is in cpu
+                # noise is in cpu
+
+                target_device = transformer.device
+
+                model_input = model_input.to(target_device)
+                noise = noise.to(target_device)
+                sigmas = sigmas.to(target_device)
+
                 noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
 
-                import pdb; pdb.set_trace()
-                print(f"noisy_model_input", noisy_model_input.device, noisy_model_input.shape)
-                print(f"timesteps", timesteps.device, timesteps.shape)
-                print(f"pooled_prompt_embeds", pooled_prompt_embeds.device, pooled_prompt_embeds.shape)
-                noisy_model_input = noisy_model_input.to(accelerator.device, dtype=transformer.dtype)
-                timesteps = timesteps.to(accelerator.device, dtype=transformer.dtype)
-                prompt_embeds = prompt_embeds.to(accelerator.device, dtype=transformer.dtype)
-                pooled_prompt_embeds = pooled_prompt_embeds.to(accelerator.device, dtype=transformer.dtype)
+                if isinstance(transformer, torch.nn.parallel.DistributedDataParallel):
+                    target_dtype = transformer.module.dtype
+                elif isinstance(transformer, torch.nn.Module):
+                    target_dtype = transformer.dtype
+
+                noisy_model_input = noisy_model_input.to(target_device, dtype=target_dtype)
+                timesteps = timesteps.to(target_device, dtype=target_dtype)
+                prompt_embeds = prompt_embeds.to(target_device, dtype=target_dtype)
+                pooled_prompt_embeds = pooled_prompt_embeds.to(target_device, dtype=target_dtype)
                 # Predict the noise residual
+
+                print(f"noisy_model_input: {noisy_model_input.shape}")
+                print(f"timesteps: {timesteps.shape}")
+                print(f"prompt_embeds: {prompt_embeds.shape}")
+                print(f"pooled_prompt_embeds: {pooled_prompt_embeds.shape}")
+                start = time.time()
                 model_pred = transformer(
                     hidden_states=noisy_model_input,
                     timestep=timesteps,
@@ -1808,6 +1983,9 @@ def main(args):
                     pooled_projections=pooled_prompt_embeds,
                     return_dict=False,
                 )[0]
+                delta = time.time() - start
+                print(f"Transformer time: {delta:.4f} sec")
+                print(f"model_pred: {model_pred.shape}")
 
                 # Follow: Section 5 of https://huggingface.co/papers/2206.00364.
                 # Preconditioning of the model outputs.
@@ -1849,8 +2027,10 @@ def main(args):
                     # Add the prior loss to the instance loss.
                     loss = loss + args.prior_loss_weight * prior_loss
 
-                accelerator.backward(loss)
+                # accelerator.backward(loss)
+                loss.backward()
                 if accelerator.sync_gradients:
+                    # NOTE: Not fixing this block.
                     params_to_clip = (
                         itertools.chain(
                             transformer_lora_parameters, text_lora_parameters_one, text_lora_parameters_two
@@ -1863,9 +2043,25 @@ def main(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
+                if args.enable_profiling:
+                    import torch_qaic.profile as qaic_profile
+                    qaic_profile.stop_profiling("qaic:0")
+                    qaic_profile.stop_profiling("qaic:1")
+                    qaic_profile.stop_profiling("qaic:2")
+                    qaic_profile.stop_profiling("qaic:3")
+                    qaic_profile.stop_profiling("qaic:4")
+                    qaic_profile.stop_profiling("qaic:5")
+                    qaic_profile.stop_profiling("qaic:6")
+                    qaic_profile.stop_profiling("qaic:7")
+                    qaic_profile.stop_profiling("qaic:8")
+                    qaic_profile.stop_profiling("qaic:9")
+                    print(f"Step {step+1} completed.")
+                    import sys
+                    sys.exit()
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
+                # NOTE: Not fixing this block.
                 progress_bar.update(1)
                 global_step += 1
 
@@ -1897,7 +2093,8 @@ def main(args):
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
-            accelerator.log(logs, step=global_step)
+            # accelerator.log(logs, step=global_step)
+            logger.info(logs)
 
             if global_step >= args.max_train_steps:
                 break
@@ -1914,10 +2111,14 @@ def main(args):
                 pipeline = StableDiffusion3Pipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
                     vae=vae,
-                    text_encoder=accelerator.unwrap_model(text_encoder_one),
-                    text_encoder_2=accelerator.unwrap_model(text_encoder_two),
-                    text_encoder_3=accelerator.unwrap_model(text_encoder_three),
-                    transformer=accelerator.unwrap_model(transformer),
+                    # text_encoder=accelerator.unwrap_model(text_encoder_one),
+                    # text_encoder_2=accelerator.unwrap_model(text_encoder_two),
+                    # text_encoder_3=accelerator.unwrap_model(text_encoder_three),
+                    # transformer=accelerator.unwrap_model(transformer),
+                    text_encoder=text_encoder_one,
+                    text_encoder_2=text_encoder_two,
+                    text_encoder_3=text_encoder_three,
+                    transformer=transformer,
                     revision=args.revision,
                     variant=args.variant,
                     torch_dtype=weight_dtype,
@@ -1936,7 +2137,7 @@ def main(args):
                     free_memory()
 
     # Save the lora layers
-    accelerator.wait_for_everyone()
+    # accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         transformer = unwrap_model(transformer)
         if args.upcast_before_saving:
@@ -2003,7 +2204,7 @@ def main(args):
                 ignore_patterns=["step_*", "epoch_*"],
             )
 
-    accelerator.end_training()
+    # accelerator.end_training()
 
 
 if __name__ == "__main__":

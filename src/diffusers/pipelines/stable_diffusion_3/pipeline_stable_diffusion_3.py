@@ -1007,6 +1007,7 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
             generator,
             latents,
         )
+        print(f"Latent shape: {latents.shape}")
 
         # 5. Prepare timesteps
         scheduler_kwargs = {}
@@ -1053,6 +1054,7 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
         # 7. Denoising loop
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
+                print(f"Timestep: {i+1}/{len(timesteps)}")
                 if self.interrupt:
                     continue
 
@@ -1061,6 +1063,10 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latent_model_input.shape[0])
 
+                latent_model_input = latent_model_input.to(dtype=self.transformer.dtype, device=self.transformer.device)
+                timestep = timestep.to(dtype=self.transformer.dtype, device=self.transformer.device)
+                prompt_embeds = prompt_embeds.to(dtype=self.transformer.dtype, device=self.transformer.device)
+                pooled_prompt_embeds = pooled_prompt_embeds.to(dtype=self.transformer.dtype, device=self.transformer.device)
                 noise_pred = self.transformer(
                     hidden_states=latent_model_input,
                     timestep=timestep,
@@ -1069,6 +1075,7 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
                     joint_attention_kwargs=self.joint_attention_kwargs,
                     return_dict=False,
                 )[0]
+                noise_pred = noise_pred.to(device="cpu")
 
                 # perform guidance
                 if self.do_classifier_free_guidance:
@@ -1127,7 +1134,7 @@ class StableDiffusion3Pipeline(DiffusionPipeline, SD3LoraLoaderMixin, FromSingle
 
         else:
             latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-
+            latents = latents.to(dtype=self.vae.dtype, device=self.vae.device)
             image = self.vae.decode(latents, return_dict=False)[0]
             image = self.image_processor.postprocess(image, output_type=output_type)
 
