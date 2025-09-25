@@ -30,6 +30,7 @@ import numpy as np
 import torch
 import torch_qaic
 import torch.utils.checkpoint
+import torch.distributed as dist
 import transformers
 from unittest.mock import Mock
 from torch.utils.tensorboard import SummaryWriter
@@ -215,7 +216,7 @@ def load_text_encoders(class_one, class_two, class_three):
     }
     text_encoder_three = class_three.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder_3", revision=args.revision, variant=args.variant, 
-        device_map=text_encoder_three_device_map
+        # device_map=text_encoder_three_device_map
     )
     return text_encoder_one, text_encoder_two, text_encoder_three
 
@@ -292,6 +293,11 @@ def import_model_class_from_model_name_or_path(
 
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
+    parser.add_argument(
+        "--enable_profiling",
+        action='store_true',
+        help="Enable qaic profiler. It will run for single step of training.",
+    )
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
@@ -1093,6 +1099,7 @@ def encode_prompt(
     clip_prompt_embeds_list = []
     clip_pooled_prompt_embeds_list = []
     for i, (tokenizer, text_encoder) in enumerate(zip(clip_tokenizers, clip_text_encoders)):
+        start = time.time()
         prompt_embeds, pooled_prompt_embeds = _encode_prompt_with_clip(
             text_encoder=text_encoder,
             tokenizer=tokenizer,
@@ -1101,12 +1108,15 @@ def encode_prompt(
             num_images_per_prompt=num_images_per_prompt,
             text_input_ids=text_input_ids_list[i] if text_input_ids_list else None,
         )
+        delta = time.time() - start
+        print(f"Text encoder {i+1} time: {delta:.4f} sec")
         clip_prompt_embeds_list.append(prompt_embeds.to("cpu"))
         clip_pooled_prompt_embeds_list.append(pooled_prompt_embeds.to("cpu"))
 
     clip_prompt_embeds = torch.cat(clip_prompt_embeds_list, dim=-1)
     pooled_prompt_embeds = torch.cat(clip_pooled_prompt_embeds_list, dim=-1)
 
+    start = time.time()
     t5_prompt_embed = _encode_prompt_with_t5(
         text_encoders[-1],
         tokenizers[-1],
@@ -1116,6 +1126,8 @@ def encode_prompt(
         text_input_ids=text_input_ids_list[-1] if text_input_ids_list else None,
         device=device if device is not None else text_encoders[-1].device,
     )
+    delta = time.time() - start
+    print(f"Text encoder 3 time: {delta:.4f} sec")
 
     clip_prompt_embeds = torch.nn.functional.pad(
         clip_prompt_embeds, (0, t5_prompt_embed.shape[-1] - clip_prompt_embeds.shape[-1])
@@ -1150,10 +1162,10 @@ def main(args):
     #     kwargs_handlers=[kwargs],
     # )
     accelerator = Mock()
-    accelerator.is_local_main_process = True
-    accelerator.is_main_process = True
+    accelerator.is_local_main_process = int(os.getenv("LOCAL_RANK", 0)) == 0
+    accelerator.is_main_process = int(os.getenv("LOCAL_RANK", 0)) == 0
     accelerator.print = print
-    accelerator.num_processes = 1
+    accelerator.num_processes = int(os.getenv("WORLD_SIZE", 1))
     accelerator.distributed_type = "DUMMY"
     accelerator.mixed_precision = "fp16"
     accelerator.device = "qaic"
@@ -1335,7 +1347,7 @@ def main(args):
     }
     transformer = SD3Transformer2DModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="transformer", revision=args.revision, variant=args.variant, 
-        device_map=transformer_device_map
+        # device_map=transformer_device_map
     )
 
     transformer.requires_grad_(False)
@@ -1370,13 +1382,24 @@ def main(args):
     # text_encoder_one.to(offload_device, dtype=weight_dtype)
     # text_encoder_two.to(offload_device, dtype=weight_dtype)
     # text_encoder_three.to(offload_device, dtype=weight_dtype)
-    text_encoder_one.to("qaic:0", dtype=weight_dtype)
-    text_encoder_two.to("qaic:1", dtype=weight_dtype)
-    # text_encoder_three.to("qaic:2", dtype=weight_dtype)
-    # text_encoder_three: Device 2, 3, 4 
-    vae.to("qaic:5", dtype=weight_dtype)
-    # transformer: Device 6, 7, 8, 9
-    # transformer.to("qaic:4", dtype=weight_dtype)
+    devices_per_rank = int(os.getenv("DEVICES_PER_RANK", 2))
+    rank = int(os.getenv("LOCAL_RANK", 0))
+    te_1_device_id = int(os.getenv("TE_1_DEVICE_ID", 0)) + rank * devices_per_rank
+    te_2_device_id = int(os.getenv("TE_2_DEVICE_ID", 0)) + rank * devices_per_rank
+    te_3_device_id = int(os.getenv("TE_3_DEVICE_ID", 0)) + rank * devices_per_rank
+    vae_device_id = int(os.getenv("VAE_DEVICE_ID", 0)) + rank * devices_per_rank
+    transformer_device_id = int(os.getenv("TRANSFORMER_DEVICE_ID", 1)) + rank * devices_per_rank
+    print(f"{te_1_device_id=}")
+    print(f"{te_2_device_id=}")
+    print(f"{te_3_device_id=}")
+    print(f"{vae_device_id=}")
+    print(f"{transformer_device_id=}")
+    
+    text_encoder_one.to(f"qaic:{te_1_device_id}", dtype=weight_dtype)
+    text_encoder_two.to(f"qaic:{te_2_device_id}", dtype=weight_dtype)
+    text_encoder_three.to(f"qaic:{te_3_device_id}", dtype=weight_dtype)
+    vae.to(f"qaic:{vae_device_id}", dtype=weight_dtype)
+    transformer.to(f"qaic:{transformer_device_id}", dtype=weight_dtype)
 
     if args.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
@@ -1772,11 +1795,11 @@ def main(args):
         assert text_encoder_two is not None
         assert text_encoder_three is not None
     else:
-        pass
-        # transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        #     transformer, optimizer, train_dataloader, lr_scheduler,
-            # device_placement=["qaic:0", "qaic:0", "qaic:0", "qaic:0"]
-        # )
+        if dist.is_available() and dist.is_initialized():
+            # train_dataloader = accelerator.prepare_data(train_dataloader)
+            text_encoder_one, text_encoder_two, text_encoder_three, vae, transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                text_encoder_one, text_encoder_two, text_encoder_three, vae, transformer, optimizer, train_dataloader, lr_scheduler,
+            )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
@@ -1871,16 +1894,16 @@ def main(args):
 
         if args.enable_profiling:
             import torch_qaic.profile as qaic_profile
-            qaic_profile.start_profiling("qaic:0", 1, path="./qaic-dumps/hw-trace-text_encoder_1-model-device-id-0")
-            qaic_profile.start_profiling("qaic:1", 1, path="./qaic-dumps/hw-trace-text_encoder-2-model-device-id-1")
-            qaic_profile.start_profiling("qaic:2", 1, path="./qaic-dumps/hw-trace-text_encoder-3-model-device-id-2")
-            qaic_profile.start_profiling("qaic:3", 1, path="./qaic-dumps/hw-trace-text_encoder-3-model-device-id-3")
-            qaic_profile.start_profiling("qaic:4", 1, path="./qaic-dumps/hw-trace-text_encoder-3-model-device-id-4")
-            qaic_profile.start_profiling("qaic:5", 1, path="./qaic-dumps/hw-trace-vae-model-device-id-5")
-            qaic_profile.start_profiling("qaic:6", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-6")
-            qaic_profile.start_profiling("qaic:7", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-7")
-            qaic_profile.start_profiling("qaic:8", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-8")
-            qaic_profile.start_profiling("qaic:9", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-9")
+            qaic_profile.start_profiling("qaic:0", 1, path="./qaic-dumps/hw-trace-all_te_vae-device-id-0")
+            qaic_profile.start_profiling("qaic:1", 1, path="./qaic-dumps/hw-trace-transformer-device-id-1")
+            # qaic_profile.start_profiling("qaic:2", 1, path="./qaic-dumps/hw-trace-text_encoder-3-model-device-id-2")
+            # qaic_profile.start_profiling("qaic:3", 1, path="./qaic-dumps/hw-trace-text_encoder-3-model-device-id-3")
+            # qaic_profile.start_profiling("qaic:4", 1, path="./qaic-dumps/hw-trace-text_encoder-3-model-device-id-4")
+            # qaic_profile.start_profiling("qaic:5", 1, path="./qaic-dumps/hw-trace-vae-model-device-id-5")
+            # qaic_profile.start_profiling("qaic:6", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-6")
+            # qaic_profile.start_profiling("qaic:7", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-7")
+            # qaic_profile.start_profiling("qaic:8", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-8")
+            # qaic_profile.start_profiling("qaic:9", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-9")
                 
         for step, batch in enumerate(train_dataloader):
             models_to_accumulate = [transformer]
@@ -1924,7 +1947,10 @@ def main(args):
                 else:
                     pixel_values = batch["pixel_values"].to(vae.device, dtype=vae.dtype)
                     print(f"Pixel values shape: {pixel_values.shape}")
+                    start = time.time()
                     model_input = vae.encode(pixel_values).latent_dist.sample()
+                    delta = time.time() - start
+                    print(f"VAE encoder time: {delta:.4f} sec")
 
                 model_input = (model_input - vae_config_shift_factor) * vae_config_scaling_factor
                 model_input = model_input.to(dtype=weight_dtype)
@@ -1987,6 +2013,7 @@ def main(args):
                 print(f"Transformer time: {delta:.4f} sec")
                 print(f"model_pred: {model_pred.shape}")
 
+                start = time.time()
                 # Follow: Section 5 of https://huggingface.co/papers/2206.00364.
                 # Preconditioning of the model outputs.
                 if args.precondition_outputs:
@@ -2043,18 +2070,20 @@ def main(args):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
+                delta = time.time() - start
+                print(f"Optimizer step time: {delta:.4f} sec")
                 if args.enable_profiling:
                     import torch_qaic.profile as qaic_profile
                     qaic_profile.stop_profiling("qaic:0")
                     qaic_profile.stop_profiling("qaic:1")
-                    qaic_profile.stop_profiling("qaic:2")
-                    qaic_profile.stop_profiling("qaic:3")
-                    qaic_profile.stop_profiling("qaic:4")
-                    qaic_profile.stop_profiling("qaic:5")
-                    qaic_profile.stop_profiling("qaic:6")
-                    qaic_profile.stop_profiling("qaic:7")
-                    qaic_profile.stop_profiling("qaic:8")
-                    qaic_profile.stop_profiling("qaic:9")
+                    # qaic_profile.stop_profiling("qaic:2")
+                    # qaic_profile.stop_profiling("qaic:3")
+                    # qaic_profile.stop_profiling("qaic:4")
+                    # qaic_profile.stop_profiling("qaic:5")
+                    # qaic_profile.stop_profiling("qaic:6")
+                    # qaic_profile.stop_profiling("qaic:7")
+                    # qaic_profile.stop_profiling("qaic:8")
+                    # qaic_profile.stop_profiling("qaic:9")
                     print(f"Step {step+1} completed.")
                     import sys
                     sys.exit()
