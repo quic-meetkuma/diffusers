@@ -294,6 +294,11 @@ def import_model_class_from_model_name_or_path(
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
     parser.add_argument(
+        "--debug",
+        action='store_true',
+        help="Enable debug logs.",
+    )
+    parser.add_argument(
         "--enable_profiling",
         action='store_true',
         help="Enable qaic profiler. It will run for single step of training.",
@@ -1099,7 +1104,8 @@ def encode_prompt(
     clip_prompt_embeds_list = []
     clip_pooled_prompt_embeds_list = []
     for i, (tokenizer, text_encoder) in enumerate(zip(clip_tokenizers, clip_text_encoders)):
-        start = time.time()
+        if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+            start = time.time()
         prompt_embeds, pooled_prompt_embeds = _encode_prompt_with_clip(
             text_encoder=text_encoder,
             tokenizer=tokenizer,
@@ -1108,15 +1114,17 @@ def encode_prompt(
             num_images_per_prompt=num_images_per_prompt,
             text_input_ids=text_input_ids_list[i] if text_input_ids_list else None,
         )
-        delta = time.time() - start
-        print(f"Text encoder {i+1} time: {delta:.4f} sec")
+        if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+            delta = time.time() - start
+            print(f"Text encoder {i+1} time: {delta:.4f} sec")
         clip_prompt_embeds_list.append(prompt_embeds.to("cpu"))
         clip_pooled_prompt_embeds_list.append(pooled_prompt_embeds.to("cpu"))
 
     clip_prompt_embeds = torch.cat(clip_prompt_embeds_list, dim=-1)
     pooled_prompt_embeds = torch.cat(clip_pooled_prompt_embeds_list, dim=-1)
 
-    start = time.time()
+    if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+        start = time.time()
     t5_prompt_embed = _encode_prompt_with_t5(
         text_encoders[-1],
         tokenizers[-1],
@@ -1126,8 +1134,9 @@ def encode_prompt(
         text_input_ids=text_input_ids_list[-1] if text_input_ids_list else None,
         device=device if device is not None else text_encoders[-1].device,
     )
-    delta = time.time() - start
-    print(f"Text encoder 3 time: {delta:.4f} sec")
+    if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+        delta = time.time() - start
+        print(f"Text encoder 3 time: {delta:.4f} sec")
 
     clip_prompt_embeds = torch.nn.functional.pad(
         clip_prompt_embeds, (0, t5_prompt_embed.shape[-1] - clip_prompt_embeds.shape[-1])
@@ -1356,11 +1365,12 @@ def main(args):
     text_encoder_two.requires_grad_(False)
     text_encoder_three.requires_grad_(False)
 
-    print_stats(transformer, "transformer")
-    print_stats(text_encoder_one, "text_encoder_one")
-    print_stats(text_encoder_two, "text_encoder_two")
-    print_stats(text_encoder_three, "text_encoder_three")
-    print_stats(vae, "vae")
+    if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+        print_stats(transformer, "transformer")
+        print_stats(text_encoder_one, "text_encoder_one")
+        print_stats(text_encoder_two, "text_encoder_two")
+        print_stats(text_encoder_three, "text_encoder_three")
+        print_stats(vae, "vae")
 
     # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora transformer) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
@@ -1389,11 +1399,12 @@ def main(args):
     te_3_device_id = int(os.getenv("TE_3_DEVICE_ID", 0)) + rank * devices_per_rank
     vae_device_id = int(os.getenv("VAE_DEVICE_ID", 0)) + rank * devices_per_rank
     transformer_device_id = int(os.getenv("TRANSFORMER_DEVICE_ID", 1)) + rank * devices_per_rank
-    print(f"{te_1_device_id=}")
-    print(f"{te_2_device_id=}")
-    print(f"{te_3_device_id=}")
-    print(f"{vae_device_id=}")
-    print(f"{transformer_device_id=}")
+    if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+        print(f"{te_1_device_id=}")
+        print(f"{te_2_device_id=}")
+        print(f"{te_3_device_id=}")
+        print(f"{vae_device_id=}")
+        print(f"{transformer_device_id=}")
     
     text_encoder_one.to(f"qaic:{te_1_device_id}", dtype=weight_dtype)
     text_encoder_two.to(f"qaic:{te_2_device_id}", dtype=weight_dtype)
@@ -1881,6 +1892,43 @@ def main(args):
             sigma = sigma.unsqueeze(-1)
         return sigma
 
+    # if accelerator.is_main_process:
+    #     if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
+    #         if not args.train_text_encoder:
+    #             # create pipeline
+    #             text_encoder_one, text_encoder_two, text_encoder_three = load_text_encoders(
+    #                 text_encoder_cls_one, text_encoder_cls_two, text_encoder_cls_three
+    #             )
+    #             text_encoder_one.to(weight_dtype)
+    #             text_encoder_two.to(weight_dtype)
+    #         pipeline = StableDiffusion3Pipeline.from_pretrained(
+    #             args.pretrained_model_name_or_path,
+    #             vae=vae,
+    #             # text_encoder=accelerator.unwrap_model(text_encoder_one),
+    #             # text_encoder_2=accelerator.unwrap_model(text_encoder_two),
+    #             # text_encoder_3=accelerator.unwrap_model(text_encoder_three),
+    #             # transformer=accelerator.unwrap_model(transformer),
+    #             text_encoder=text_encoder_one,
+    #             text_encoder_2=text_encoder_two,
+    #             text_encoder_3=text_encoder_three,
+    #             transformer=transformer,
+    #             revision=args.revision,
+    #             variant=args.variant,
+    #             torch_dtype=weight_dtype,
+    #         )
+    #         pipeline_args = {"prompt": args.validation_prompt}
+    #         images = log_validation(
+    #             pipeline=pipeline,
+    #             args=args,
+    #             accelerator=accelerator,
+    #             pipeline_args=pipeline_args,
+    #             epoch=epoch,
+    #             torch_dtype=weight_dtype,
+    #         )
+    #         if not args.train_text_encoder:
+    #             del text_encoder_one, text_encoder_two, text_encoder_three
+    #             free_memory()
+
     for epoch in range(first_epoch, args.num_train_epochs):
         transformer.train()
         if args.train_text_encoder:
@@ -1912,7 +1960,8 @@ def main(args):
             # with accelerator.accumulate(models_to_accumulate):
             with nullcontext():
                 prompts = batch["prompts"]
-                print("Prompts: ", prompts)
+                if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+                    print("Prompts: ", prompts)
 
                 # encode batch prompts when custom prompts are provided for each image -
                 if train_dataset.custom_instance_prompts:
@@ -1946,11 +1995,13 @@ def main(args):
                     model_input = latents_cache[step].sample()
                 else:
                     pixel_values = batch["pixel_values"].to(vae.device, dtype=vae.dtype)
-                    print(f"Pixel values shape: {pixel_values.shape}")
-                    start = time.time()
+                    if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+                        print(f"Pixel values shape: {pixel_values.shape}")
+                        start = time.time()
                     model_input = vae.encode(pixel_values).latent_dist.sample()
-                    delta = time.time() - start
-                    print(f"VAE encoder time: {delta:.4f} sec")
+                    if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+                        delta = time.time() - start
+                        print(f"VAE encoder time: {delta:.4f} sec")
 
                 model_input = (model_input - vae_config_shift_factor) * vae_config_scaling_factor
                 model_input = model_input.to(dtype=weight_dtype)
@@ -1997,11 +2048,12 @@ def main(args):
                 pooled_prompt_embeds = pooled_prompt_embeds.to(target_device, dtype=target_dtype)
                 # Predict the noise residual
 
-                print(f"noisy_model_input: {noisy_model_input.shape}")
-                print(f"timesteps: {timesteps.shape}")
-                print(f"prompt_embeds: {prompt_embeds.shape}")
-                print(f"pooled_prompt_embeds: {pooled_prompt_embeds.shape}")
-                start = time.time()
+                if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+                    print(f"noisy_model_input: {noisy_model_input.shape}")
+                    print(f"timesteps: {timesteps.shape}")
+                    print(f"prompt_embeds: {prompt_embeds.shape}")
+                    print(f"pooled_prompt_embeds: {pooled_prompt_embeds.shape}")
+                    start = time.time()
                 model_pred = transformer(
                     hidden_states=noisy_model_input,
                     timestep=timesteps,
@@ -2009,9 +2061,10 @@ def main(args):
                     pooled_projections=pooled_prompt_embeds,
                     return_dict=False,
                 )[0]
-                delta = time.time() - start
-                print(f"Transformer time: {delta:.4f} sec")
-                print(f"model_pred: {model_pred.shape}")
+                if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+                    delta = time.time() - start
+                    print(f"Transformer time: {delta:.4f} sec")
+                    print(f"model_pred: {model_pred.shape}")
 
                 start = time.time()
                 # Follow: Section 5 of https://huggingface.co/papers/2206.00364.
@@ -2056,7 +2109,8 @@ def main(args):
 
                 # accelerator.backward(loss)
                 loss.backward()
-                if accelerator.sync_gradients:
+                # if accelerator.sync_gradients:
+                if (global_step % args.gradient_accumulation_steps == 0):
                     # NOTE: Not fixing this block.
                     params_to_clip = (
                         itertools.chain(
@@ -2065,13 +2119,16 @@ def main(args):
                         if args.train_text_encoder
                         else transformer_lora_parameters
                     )
-                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    # accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    torch.nn.utils.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                delta = time.time() - start
-                print(f"Optimizer step time: {delta:.4f} sec")
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+
+                if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+                    delta = time.time() - start
+                    print(f"Optimizer step time: {delta:.4f} sec")
                 if args.enable_profiling:
                     import torch_qaic.profile as qaic_profile
                     qaic_profile.stop_profiling("qaic:0")
@@ -2084,16 +2141,17 @@ def main(args):
                     # qaic_profile.stop_profiling("qaic:7")
                     # qaic_profile.stop_profiling("qaic:8")
                     # qaic_profile.stop_profiling("qaic:9")
-                    print(f"Step {step+1} completed.")
+                    if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+                        print(f"Step {step+1} completed.")
                     import sys
                     sys.exit()
 
+            # NOTE: Not fixing this block.
+            progress_bar.update(1)
+            global_step += 1
             # Checks if the accelerator has performed an optimization step behind the scenes
-            if accelerator.sync_gradients:
-                # NOTE: Not fixing this block.
-                progress_bar.update(1)
-                global_step += 1
-
+            # if accelerator.sync_gradients:
+            if True:
                 if accelerator.is_main_process or accelerator.distributed_type == DistributedType.DEEPSPEED:
                     if global_step % args.checkpointing_steps == 0:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
@@ -2123,7 +2181,7 @@ def main(args):
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             # accelerator.log(logs, step=global_step)
-            logger.info(logs)
+            # logger.info(logs)
 
             if global_step >= args.max_train_steps:
                 break
