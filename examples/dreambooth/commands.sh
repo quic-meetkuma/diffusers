@@ -67,7 +67,7 @@ cd /home/meetkuma/diffusers_exp/diffusers/examples/dreambooth/
 source /home/meetkuma/python_env/diffuser_env/bin/activate
 export MODEL_NAME="stabilityai/stable-diffusion-3.5-large-turbo"
 export INSTANCE_DIR="dog"
-export OUTPUT_DIR="trained-sd3-lora_64x64_v3"
+export OUTPUT_DIR="trained-sd3-lora_512x512"
 export HF_HOME=/home/meetkuma/tmp
 
 ACCELERATE_BYPASS_DEVICE_MAP="true" DEVICES_PER_RANK=2 \
@@ -102,7 +102,10 @@ export OUTPUT_DIR="trained-sd3-lora_512x512_v3"
 export HF_HOME=/home/meetkuma/tmp
 
 # Original model inference
-QAIC_VISIBLE_DEVICES=0,1 python infer_dreambooth_lora_sd3.py \
+QAIC_VISIBLE_DEVICES=0,1 \
+TE_1_DEVICE_ID=0 TE_2_DEVICE_ID=0 TE_3_DEVICE_ID=0 \
+VAE_DEVICE_ID=0 TRANSFORMER_DEVICE_ID=1 \
+python infer_dreambooth_lora_sd3.py \
   --pretrained_model_name_or_path=$MODEL_NAME  \
   --resolution=512 \
   --num_validation_images=5 \
@@ -110,7 +113,10 @@ QAIC_VISIBLE_DEVICES=0,1 python infer_dreambooth_lora_sd3.py \
   --denoising_steps 24 --seed="0"
 
 # Finetuned model inference
-QAIC_VISIBLE_DEVICES=0,1 python infer_dreambooth_lora_sd3.py \
+QAIC_VISIBLE_DEVICES=0,1 \
+TE_1_DEVICE_ID=0 TE_2_DEVICE_ID=0 TE_3_DEVICE_ID=0 \
+VAE_DEVICE_ID=0 TRANSFORMER_DEVICE_ID=1 \
+python infer_dreambooth_lora_sd3.py \
   --pretrained_model_name_or_path=$MODEL_NAME  \
   --output_dir=$OUTPUT_DIR \
   --resolution=512 \

@@ -28,7 +28,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch_qaic
+try:
+    import torch_qaic
+    torch_qaic_available = True
+except ImportError as e:
+    print(f"Not able to import 'torch_qaic' package due to: {e}.")
+    torch_qaic_available = False
 import torch.utils.checkpoint
 import torch.distributed as dist
 import transformers
@@ -1177,7 +1182,10 @@ def main(args):
     accelerator.num_processes = int(os.getenv("WORLD_SIZE", 1))
     accelerator.distributed_type = "DUMMY"
     accelerator.mixed_precision = "fp16"
-    accelerator.device = "qaic"
+    if torch_qaic_available:
+        accelerator.device = "qaic"
+    else:
+        accelerator.device = "cuda" 
     accelerator.sync_gradients = False
 
     # Disable AMP for MPS.
@@ -1406,11 +1414,16 @@ def main(args):
         print(f"{vae_device_id=}")
         print(f"{transformer_device_id=}")
     
-    text_encoder_one.to(f"qaic:{te_1_device_id}", dtype=weight_dtype)
-    text_encoder_two.to(f"qaic:{te_2_device_id}", dtype=weight_dtype)
-    text_encoder_three.to(f"qaic:{te_3_device_id}", dtype=weight_dtype)
-    vae.to(f"qaic:{vae_device_id}", dtype=weight_dtype)
-    transformer.to(f"qaic:{transformer_device_id}", dtype=weight_dtype)
+    if torch_qaic_available:
+        device_str = "qaic"
+    else:
+        device_str = "cuda"
+
+    text_encoder_one.to(f"{device_str}:{te_1_device_id}", dtype=weight_dtype)
+    text_encoder_two.to(f"{device_str}:{te_2_device_id}", dtype=weight_dtype)
+    text_encoder_three.to(f"{device_str}:{te_3_device_id}", dtype=weight_dtype)
+    vae.to(f"{device_str}:{vae_device_id}", dtype=weight_dtype)
+    transformer.to(f"{device_str}:{transformer_device_id}", dtype=weight_dtype)
 
     if args.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
@@ -1940,7 +1953,7 @@ def main(args):
             accelerator.unwrap_model(text_encoder_one).text_model.embeddings.requires_grad_(True)
             accelerator.unwrap_model(text_encoder_two).text_model.embeddings.requires_grad_(True)
 
-        if args.enable_profiling:
+        if args.enable_profiling and torch_qaic_available:
             import torch_qaic.profile as qaic_profile
             qaic_profile.start_profiling("qaic:0", 1, path="./qaic-dumps/hw-trace-all_te_vae-device-id-0")
             qaic_profile.start_profiling("qaic:1", 1, path="./qaic-dumps/hw-trace-transformer-device-id-1")
@@ -2129,7 +2142,7 @@ def main(args):
                 if int(os.getenv("DEBUG_LOGS", 0)) == 1:
                     delta = time.time() - start
                     print(f"Optimizer step time: {delta:.4f} sec")
-                if args.enable_profiling:
+                if args.enable_profiling and torch_qaic_available:
                     import torch_qaic.profile as qaic_profile
                     qaic_profile.stop_profiling("qaic:0")
                     qaic_profile.stop_profiling("qaic:1")

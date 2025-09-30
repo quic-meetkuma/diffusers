@@ -19,8 +19,14 @@ import logging
 from contextlib import nullcontext
 import matplotlib.pyplot as plt
 
+import os
 import torch
-import torch_qaic
+try:
+    import torch_qaic
+    torch_qaic_available = True
+except ImportError as e:
+    print(f"Not able to import 'torch_qaic' package due to: {e}.")
+    torch_qaic_available = False
 import torch.utils.checkpoint
 from transformers import PretrainedConfig
 
@@ -68,7 +74,11 @@ def log_validation(
         f" {args.validation_prompt}."
     )
     pipeline.set_progress_bar_config(disable=True)
-    generator = torch.Generator(device="cpu").manual_seed(args.seed) if args.seed is not None else None
+    if torch_qaic_available:
+        device_str = "qaic"
+    else:
+        device_str = "cuda"
+    generator = torch.Generator(device=device_str).manual_seed(args.seed) if args.seed is not None else None
     autocast_ctx = nullcontext()
 
     with autocast_ctx:
@@ -208,16 +218,20 @@ def main(args):
     text_encoder_three.to(weight_dtype)
     vae.to(weight_dtype)
 
-    te_1_device_id = 0
-    te_2_device_id = 0
-    te_3_device_id = 0
-    vae_device_id = 0
-    transformer_device_id = 1
-    text_encoder_one.to(f"qaic:{te_1_device_id}", dtype=weight_dtype)
-    text_encoder_two.to(f"qaic:{te_2_device_id}", dtype=weight_dtype)
-    text_encoder_three.to(f"qaic:{te_3_device_id}", dtype=weight_dtype)
-    vae.to(f"qaic:{vae_device_id}", dtype=weight_dtype)
-    transformer.to(f"qaic:{transformer_device_id}", dtype=weight_dtype)
+    te_1_device_id = int(os.getenv("TE_1_DEVICE_ID", 0))
+    te_2_device_id = int(os.getenv("TE_2_DEVICE_ID", 0))
+    te_3_device_id = int(os.getenv("TE_3_DEVICE_ID", 0))
+    vae_device_id = int(os.getenv("VAE_DEVICE_ID", 0))
+    transformer_device_id = int(os.getenv("TRANSFORMER_DEVICE_ID", 1))
+    if torch_qaic_available:
+        device_str = "qaic"
+    else:
+        device_str = "cuda"
+    text_encoder_one.to(f"{device_str}:{te_1_device_id}", dtype=weight_dtype)
+    text_encoder_two.to(f"{device_str}:{te_2_device_id}", dtype=weight_dtype)
+    text_encoder_three.to(f"{device_str}:{te_3_device_id}", dtype=weight_dtype)
+    vae.to(f"{device_str}:{vae_device_id}", dtype=weight_dtype)
+    transformer.to(f"{device_str}:{transformer_device_id}", dtype=weight_dtype)
     
     pipeline = StableDiffusion3Pipeline.from_pretrained(
         args.pretrained_model_name_or_path,
