@@ -1373,6 +1373,11 @@ def main(args):
     text_encoder_two.requires_grad_(False)
     text_encoder_three.requires_grad_(False)
 
+    # vae = torch.compile(vae)
+    # text_encoder_one = torch.compile(text_encoder_one)
+    # text_encoder_two = torch.compile(text_encoder_two)
+    # text_encoder_three = torch.compile(text_encoder_three)
+    
     if int(os.getenv("DEBUG_LOGS", 0)) == 1:
         print_stats(transformer, "transformer")
         print_stats(text_encoder_one, "text_encoder_one")
@@ -1458,6 +1463,7 @@ def main(args):
         target_modules=target_modules,
     )
     transformer.add_adapter(transformer_lora_config)
+    # transformer = torch.compile(transformer)
 
     if args.train_text_encoder:
         text_lora_config = LoraConfig(
@@ -1602,6 +1608,9 @@ def main(args):
         text_lora_parameters_one = list(filter(lambda p: p.requires_grad, text_encoder_one.parameters()))
         text_lora_parameters_two = list(filter(lambda p: p.requires_grad, text_encoder_two.parameters()))
 
+    transformer_model_total_params = sum(p.numel() for p in transformer.parameters())
+    transformer_model_trainable_params = sum(p.numel() for p in transformer.parameters() if p.requires_grad)
+    print(f"%age trainable parameters for transformer model: {transformer_model_trainable_params*100/transformer_model_total_params:.4f} %")
     # Optimization parameters
     transformer_parameters_with_lr = {"params": transformer_lora_parameters, "lr": args.learning_rate}
     if args.train_text_encoder:
@@ -1656,6 +1665,7 @@ def main(args):
             betas=(args.adam_beta1, args.adam_beta2),
             weight_decay=args.adam_weight_decay,
             eps=args.adam_epsilon,
+            fused=True,
         )
 
     if args.optimizer.lower() == "prodigy":
@@ -2188,7 +2198,24 @@ def main(args):
                                     shutil.rmtree(removing_checkpoint)
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                        
+                        transformer_lora_layers = get_peft_model_state_dict(transformer)
+                        if args.train_text_encoder:
+                            text_encoder_one = unwrap_model(text_encoder_one)
+                            text_encoder_lora_layers = get_peft_model_state_dict(text_encoder_one.to(torch.float32))
+                            text_encoder_two = unwrap_model(text_encoder_two)
+                            text_encoder_2_lora_layers = get_peft_model_state_dict(text_encoder_two.to(torch.float32))
+                        else:
+                            text_encoder_lora_layers = None
+                            text_encoder_2_lora_layers = None
+                        StableDiffusion3Pipeline.save_lora_weights(
+                            save_directory=save_path,
+                            transformer_lora_layers=transformer_lora_layers,
+                            text_encoder_lora_layers=text_encoder_lora_layers,
+                            text_encoder_2_lora_layers=text_encoder_2_lora_layers,
+                        )
+                        
+                        # accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}

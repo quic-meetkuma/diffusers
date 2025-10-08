@@ -64,16 +64,20 @@ QAIC_VISIBLE_DEVICES=32,33,34,35,36,37,38,39,40,41 python \
 
 
 cd /home/meetkuma/diffusers_exp/diffusers/examples/dreambooth/
-source /home/meetkuma/python_env/diffuser_env/bin/activate
+source /home/meetkuma/diffusers_exp/diffuser_env/bin/activate
 export MODEL_NAME="stabilityai/stable-diffusion-3.5-large-turbo"
 export INSTANCE_DIR="dog"
-export OUTPUT_DIR="trained-sd3-lora_512x512"
+export OUTPUT_DIR="trained-sd3-lora_512x512_75_SDK"
 export HF_HOME=/home/meetkuma/tmp
+
+# Install 79 SDK whl file in the environment
+
 
 ACCELERATE_BYPASS_DEVICE_MAP="true" DEVICES_PER_RANK=2 \
 TE_1_DEVICE_ID=0 TE_2_DEVICE_ID=0 TE_3_DEVICE_ID=0 \
 VAE_DEVICE_ID=0 TRANSFORMER_DEVICE_ID=1 \
-QAIC_VISIBLE_DEVICES=0,1 DEBUG_LOGS=1 python \
+QAIC_DDR_SCRATCH_PAD_IN_MB=5120 \
+QAIC_VISIBLE_DEVICES=2,3 DEBUG_LOGS=1 python \
   train_dreambooth_lora_sd3.py \
   --pretrained_model_name_or_path=$MODEL_NAME  \
   --instance_data_dir=$INSTANCE_DIR \
@@ -89,8 +93,12 @@ QAIC_VISIBLE_DEVICES=0,1 DEBUG_LOGS=1 python \
   --num_train_epochs=25 \
   --num_validation_images=1 \
   --validation_prompt="A photo of sks dog in a bucket" \
-  --validation_epochs=5 \
-  --seed="0" --enable_profiling
+  --validation_epochs=1 \
+  --checkpointing_steps 1 \
+  --seed="0" \
+
+
+# --enable_profiling 2>&1 | tee qaic_debug_1_2_5_logs_sanjay_30_09_2025.txt
 
 
 
