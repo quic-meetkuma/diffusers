@@ -64,21 +64,20 @@ QAIC_VISIBLE_DEVICES=32,33,34,35,36,37,38,39,40,41 python \
 
 
 cd /home/meetkuma/diffusers_exp/diffusers/examples/dreambooth/
+# source /home/meetkuma/python_env/diffuser_env/bin/activate
 source /home/meetkuma/diffusers_exp/diffuser_env/bin/activate
 export MODEL_NAME="stabilityai/stable-diffusion-3.5-large-turbo"
 export INSTANCE_DIR="dog"
-export INSTANCE_DIR="dog_4_images"
 export OUTPUT_DIR="trained-sd3-lora_512x512_84_SDK"
-export HF_HOME=/home/meetkuma/tmp
-
+export HF_HOME=/home/HF_HOME/
 # Install 79 SDK whl file in the environment
 
 # QAIC_DDR_SCRATCH_PAD_IN_MB=5120  --> Tune this value because of this in eval text encoder 3 is not fitting on the device id 0.
-ACCELERATE_BYPASS_DEVICE_MAP="true" DEVICES_PER_RANK=2 \
+ACCELERATE_BYPASS_DEVICE_MAP="true" \
 TE_1_DEVICE_ID=0 TE_2_DEVICE_ID=0 TE_3_DEVICE_ID=0 \
-VAE_DEVICE_ID=0 TRANSFORMER_DEVICE_ID=2 \
-QAIC_DDR_SCRATCH_PAD_IN_MB=5120 \
-QAIC_VISIBLE_DEVICES=0,1,2,3 DEBUG_LOGS=1 accelerate launch --num_processes 2 \
+VAE_DEVICE_ID=0 TRANSFORMER_DEVICE_ID=5 \
+QAIC_DDR_SCRATCH_PAD_IN_MB=1024 \
+QAIC_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9 DEBUG_LOGS=1 accelerate launch --num_processes 5 \
   train_dreambooth_lora_sd3.py \
   --pretrained_model_name_or_path=$MODEL_NAME  \
   --instance_data_dir=$INSTANCE_DIR \
