@@ -67,17 +67,18 @@ cd /home/meetkuma/diffusers_exp/diffusers/examples/dreambooth/
 source /home/meetkuma/diffusers_exp/diffuser_env/bin/activate
 export MODEL_NAME="stabilityai/stable-diffusion-3.5-large-turbo"
 export INSTANCE_DIR="dog"
-export OUTPUT_DIR="trained-sd3-lora_512x512_75_SDK"
+export INSTANCE_DIR="dog_4_images"
+export OUTPUT_DIR="trained-sd3-lora_512x512_84_SDK"
 export HF_HOME=/home/meetkuma/tmp
 
 # Install 79 SDK whl file in the environment
 
-
+# QAIC_DDR_SCRATCH_PAD_IN_MB=5120  --> Tune this value because of this in eval text encoder 3 is not fitting on the device id 0.
 ACCELERATE_BYPASS_DEVICE_MAP="true" DEVICES_PER_RANK=2 \
 TE_1_DEVICE_ID=0 TE_2_DEVICE_ID=0 TE_3_DEVICE_ID=0 \
-VAE_DEVICE_ID=0 TRANSFORMER_DEVICE_ID=1 \
+VAE_DEVICE_ID=0 TRANSFORMER_DEVICE_ID=2 \
 QAIC_DDR_SCRATCH_PAD_IN_MB=5120 \
-QAIC_VISIBLE_DEVICES=2,3 DEBUG_LOGS=1 python \
+QAIC_VISIBLE_DEVICES=0,1,2,3 DEBUG_LOGS=1 accelerate launch --num_processes 2 \
   train_dreambooth_lora_sd3.py \
   --pretrained_model_name_or_path=$MODEL_NAME  \
   --instance_data_dir=$INSTANCE_DIR \
@@ -94,8 +95,8 @@ QAIC_VISIBLE_DEVICES=2,3 DEBUG_LOGS=1 python \
   --num_validation_images=1 \
   --validation_prompt="A photo of sks dog in a bucket" \
   --validation_epochs=1 \
-  --checkpointing_steps 1 \
-  --seed="0" \
+  --checkpointing_steps=1 \
+  --seed="0" 
 
 
 # --enable_profiling 2>&1 | tee qaic_debug_1_2_5_logs_sanjay_30_09_2025.txt

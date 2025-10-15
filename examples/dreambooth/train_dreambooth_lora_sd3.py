@@ -39,9 +39,9 @@ import torch.distributed as dist
 import transformers
 from unittest.mock import Mock
 from torch.utils.tensorboard import SummaryWriter
-# from accelerate import Accelerator, DistributedType
-# from accelerate.logging import get_logger
-# from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
+from accelerate import Accelerator, DistributedType
+from accelerate.logging import get_logger
+from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from accelerate.utils import set_seed
 from accelerate import DistributedType
 from huggingface_hub import create_repo, upload_folder
@@ -86,9 +86,9 @@ if is_wandb_available():
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.36.0.dev0")
 
-# logger = get_logger(__name__)
-import logging
-logger = logging.getLogger('diffuser')
+logger = get_logger(__name__)
+# import logging
+# logger = logging.getLogger('diffuser')
 
 def save_model_card(
     repo_id: str,
@@ -1166,27 +1166,27 @@ def main(args):
 
     logging_dir = Path(args.output_dir, args.logging_dir)
 
-    # accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
-    # kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    # accelerator = Accelerator(
-    #     gradient_accumulation_steps=args.gradient_accumulation_steps,
-    #     mixed_precision=args.mixed_precision,
-    #     log_with=args.report_to,
-    #     project_config=accelerator_project_config,
-    #     kwargs_handlers=[kwargs],
-    # )
-    accelerator = Mock()
-    accelerator.is_local_main_process = int(os.getenv("LOCAL_RANK", 0)) == 0
-    accelerator.is_main_process = int(os.getenv("LOCAL_RANK", 0)) == 0
-    accelerator.print = print
-    accelerator.num_processes = int(os.getenv("WORLD_SIZE", 1))
-    accelerator.distributed_type = "DUMMY"
-    accelerator.mixed_precision = "fp16"
-    if torch_qaic_available:
-        accelerator.device = "qaic"
-    else:
-        accelerator.device = "cuda" 
-    accelerator.sync_gradients = False
+    accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
+    kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        mixed_precision=args.mixed_precision,
+        log_with=args.report_to,
+        project_config=accelerator_project_config,
+        kwargs_handlers=[kwargs],
+    )
+    # accelerator = Mock()
+    # accelerator.is_local_main_process = int(os.getenv("LOCAL_RANK", 0)) == 0
+    # accelerator.is_main_process = int(os.getenv("LOCAL_RANK", 0)) == 0
+    # accelerator.print = print
+    # accelerator.num_processes = int(os.getenv("WORLD_SIZE", 1))
+    # accelerator.distributed_type = "DUMMY"
+    # accelerator.mixed_precision = "fp16"
+    # if torch_qaic_available:
+    #     accelerator.device = "qaic"
+    # else:
+    #     accelerator.device = "cuda" 
+    # accelerator.sync_gradients = False
 
     # Disable AMP for MPS.
     if torch.backends.mps.is_available():
@@ -1202,7 +1202,7 @@ def main(args):
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
     )
-    # logger.info(accelerator.state, main_process_only=False)
+    logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         transformers.utils.logging.set_verbosity_warning()
         diffusers.utils.logging.set_verbosity_info()
@@ -1400,6 +1400,7 @@ def main(args):
         )
 
     offload_device = "cpu"
+    print(f"Accelerator Distributed type: {accelerator.distributed_type}")
     # vae.to(offload_device, dtype=weight_dtype)
     # transformer.to(accelerator.device, dtype=weight_dtype)
     # text_encoder_one.to(offload_device, dtype=weight_dtype)
@@ -1407,11 +1408,14 @@ def main(args):
     # text_encoder_three.to(offload_device, dtype=weight_dtype)
     devices_per_rank = int(os.getenv("DEVICES_PER_RANK", 2))
     rank = int(os.getenv("LOCAL_RANK", 0))
-    te_1_device_id = int(os.getenv("TE_1_DEVICE_ID", 0)) + rank * devices_per_rank
-    te_2_device_id = int(os.getenv("TE_2_DEVICE_ID", 0)) + rank * devices_per_rank
-    te_3_device_id = int(os.getenv("TE_3_DEVICE_ID", 0)) + rank * devices_per_rank
-    vae_device_id = int(os.getenv("VAE_DEVICE_ID", 0)) + rank * devices_per_rank
-    transformer_device_id = int(os.getenv("TRANSFORMER_DEVICE_ID", 1)) + rank * devices_per_rank
+    world = int(os.getenv("WORLD_SIZE", 0))
+    print(f"Rank: {rank}")
+    print(f"World: {world}")
+    te_1_device_id = int(os.getenv("TE_1_DEVICE_ID", 0)) + rank
+    te_2_device_id = int(os.getenv("TE_2_DEVICE_ID", 0)) + rank
+    te_3_device_id = int(os.getenv("TE_3_DEVICE_ID", 0)) + rank
+    vae_device_id = int(os.getenv("VAE_DEVICE_ID", 0)) + rank
+    transformer_device_id = int(os.getenv("TRANSFORMER_DEVICE_ID", 2)) + rank
     if int(os.getenv("DEBUG_LOGS", 0)) == 1:
         print(f"{te_1_device_id=}")
         print(f"{te_2_device_id=}")
@@ -1477,7 +1481,7 @@ def main(args):
         text_encoder_two.add_adapter(text_lora_config)
 
     def unwrap_model(model):
-        # model = accelerator.unwrap_model(model)
+        model = accelerator.unwrap_model(model)
         model = model._orig_mod if is_compiled_module(model) else model
         return model
 
@@ -1505,7 +1509,9 @@ def main(args):
                     elif hidden_size == 1280:
                         text_encoder_two_lora_layers_to_save = get_peft_model_state_dict(model)
                 else:
-                    raise ValueError(f"unexpected save model: {model.__class__}")
+                    # raise ValueError(f"unexpected save model: {model.__class__}")
+                    print(f"unexpected save model: {model.__class__}. Skipping the model.")
+                    continue
 
                 # make sure to pop weight so that corresponding model is not saved again
                 if weights:
@@ -1582,8 +1588,8 @@ def main(args):
             # only upcast trainable parameters (LoRA) into fp32
             cast_training_params(models)
 
-    # accelerator.register_save_state_pre_hook(save_model_hook)
-    # accelerator.register_load_state_pre_hook(load_model_hook)
+    accelerator.register_save_state_pre_hook(save_model_hook)
+    accelerator.register_load_state_pre_hook(load_model_hook)
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -1754,6 +1760,9 @@ def main(args):
     if not args.train_text_encoder and not train_dataset.custom_instance_prompts:
         # Explicitly delete the objects as well, otherwise only the lists are deleted and the original references remain, preventing garbage collection
         del tokenizers, text_encoders
+        text_encoder_one.to("meta")
+        text_encoder_two.to("meta")
+        text_encoder_three.to("meta")
         del text_encoder_one, text_encoder_two, text_encoder_three
         free_memory()
 
@@ -1830,9 +1839,10 @@ def main(args):
         assert text_encoder_three is not None
     else:
         if dist.is_available() and dist.is_initialized():
+            print("Models are prepared using accelerate.")
             # train_dataloader = accelerator.prepare_data(train_dataloader)
-            text_encoder_one, text_encoder_two, text_encoder_three, vae, transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-                text_encoder_one, text_encoder_two, text_encoder_three, vae, transformer, optimizer, train_dataloader, lr_scheduler,
+            transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+                transformer, optimizer, train_dataloader, lr_scheduler,
             )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1846,13 +1856,13 @@ def main(args):
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_name = "dreambooth-sd3-lora"
-        # accelerator.init_trackers(tracker_name, config=vars(args))
-        tb_log_dir = os.path.join(args.output_dir, "tb_logs")
-        writer = SummaryWriter(tb_log_dir)
-        tb_tracker = Mock()
-        tb_tracker.name = "tensorboard"
-        tb_tracker.writer = writer
-        accelerator.trackers = [tb_tracker]
+        accelerator.init_trackers(tracker_name, config=vars(args))
+        # tb_log_dir = os.path.join(args.output_dir, "tb_logs")
+        # writer = SummaryWriter(tb_log_dir)
+        # tb_tracker = Mock()
+        # tb_tracker.name = "tensorboard"
+        # tb_tracker.writer = writer
+        # accelerator.trackers = [tb_tracker]
 
     # Train!
     total_batch_size = args.train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -1976,12 +1986,16 @@ def main(args):
             # qaic_profile.start_profiling("qaic:8", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-8")
             # qaic_profile.start_profiling("qaic:9", 1, path="./qaic-dumps/hw-trace-transformer-model-device-id-9")
                 
+                
+        print(f"[Rank-{rank}] Dataloader Length: {len(train_dataloader)}")
         for step, batch in enumerate(train_dataloader):
+            # Let main process finish the evaluation.
+            print(f"[Rank-{rank}] Dataloader step: {step+1}/{len(train_dataloader)}")
             models_to_accumulate = [transformer]
             if args.train_text_encoder:
                 models_to_accumulate.extend([text_encoder_one, text_encoder_two])
-            # with accelerator.accumulate(models_to_accumulate):
-            with nullcontext():
+            with accelerator.accumulate(models_to_accumulate):
+            # with nullcontext():
                 prompts = batch["prompts"]
                 if int(os.getenv("DEBUG_LOGS", 0)) == 1:
                     print("Prompts: ", prompts)
@@ -2130,10 +2144,10 @@ def main(args):
                     # Add the prior loss to the instance loss.
                     loss = loss + args.prior_loss_weight * prior_loss
 
-                # accelerator.backward(loss)
-                loss.backward()
-                # if accelerator.sync_gradients:
-                if (global_step % args.gradient_accumulation_steps == 0):
+                accelerator.backward(loss)
+                # loss.backward()
+                if accelerator.sync_gradients:
+                # if (global_step % args.gradient_accumulation_steps == 0):
                     # NOTE: Not fixing this block.
                     params_to_clip = (
                         itertools.chain(
@@ -2142,12 +2156,12 @@ def main(args):
                         if args.train_text_encoder
                         else transformer_lora_parameters
                     )
-                    # accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
-                    torch.nn.utils.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    # torch.nn.utils.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad()
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
 
                 if int(os.getenv("DEBUG_LOGS", 0)) == 1:
                     delta = time.time() - start
@@ -2170,11 +2184,11 @@ def main(args):
                     sys.exit()
 
             # NOTE: Not fixing this block.
-            progress_bar.update(1)
-            global_step += 1
             # Checks if the accelerator has performed an optimization step behind the scenes
-            # if accelerator.sync_gradients:
-            if True:
+            # if True:
+            if accelerator.sync_gradients:
+                progress_bar.update(1)
+                global_step += 1
                 if accelerator.is_main_process or accelerator.distributed_type == DistributedType.DEEPSPEED:
                     if global_step % args.checkpointing_steps == 0:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
@@ -2199,29 +2213,29 @@ def main(args):
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                         
-                        transformer_lora_layers = get_peft_model_state_dict(transformer)
-                        if args.train_text_encoder:
-                            text_encoder_one = unwrap_model(text_encoder_one)
-                            text_encoder_lora_layers = get_peft_model_state_dict(text_encoder_one.to(torch.float32))
-                            text_encoder_two = unwrap_model(text_encoder_two)
-                            text_encoder_2_lora_layers = get_peft_model_state_dict(text_encoder_two.to(torch.float32))
-                        else:
-                            text_encoder_lora_layers = None
-                            text_encoder_2_lora_layers = None
-                        StableDiffusion3Pipeline.save_lora_weights(
-                            save_directory=save_path,
-                            transformer_lora_layers=transformer_lora_layers,
-                            text_encoder_lora_layers=text_encoder_lora_layers,
-                            text_encoder_2_lora_layers=text_encoder_2_lora_layers,
-                        )
+                        # transformer_lora_layers = get_peft_model_state_dict(transformer)
+                        # if args.train_text_encoder:
+                        #     text_encoder_one = unwrap_model(text_encoder_one)
+                        #     text_encoder_lora_layers = get_peft_model_state_dict(text_encoder_one.to(torch.float32))
+                        #     text_encoder_two = unwrap_model(text_encoder_two)
+                        #     text_encoder_2_lora_layers = get_peft_model_state_dict(text_encoder_two.to(torch.float32))
+                        # else:
+                        #     text_encoder_lora_layers = None
+                        #     text_encoder_2_lora_layers = None
+                        # StableDiffusion3Pipeline.save_lora_weights(
+                        #     save_directory=save_path,
+                        #     transformer_lora_layers=transformer_lora_layers,
+                        #     text_encoder_lora_layers=text_encoder_lora_layers,
+                        #     text_encoder_2_lora_layers=text_encoder_2_lora_layers,
+                        # )
                         
-                        # accelerator.save_state(save_path)
+                        accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
-            # accelerator.log(logs, step=global_step)
-            # logger.info(logs)
+            accelerator.log(logs, step=global_step)
+            logger.info(logs)
 
             if global_step >= args.max_train_steps:
                 break
@@ -2235,17 +2249,22 @@ def main(args):
                     )
                     text_encoder_one.to(weight_dtype)
                     text_encoder_two.to(weight_dtype)
+                    text_encoder_three.to(weight_dtype)
+                    text_encoder_one.to(f"{device_str}:{te_1_device_id}", dtype=weight_dtype)
+                    text_encoder_two.to(f"{device_str}:{te_2_device_id}", dtype=weight_dtype)
+                    text_encoder_three.to(f"{device_str}:{te_3_device_id}", dtype=weight_dtype)
                 pipeline = StableDiffusion3Pipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
-                    vae=vae,
-                    # text_encoder=accelerator.unwrap_model(text_encoder_one),
-                    # text_encoder_2=accelerator.unwrap_model(text_encoder_two),
-                    # text_encoder_3=accelerator.unwrap_model(text_encoder_three),
-                    # transformer=accelerator.unwrap_model(transformer),
-                    text_encoder=text_encoder_one,
-                    text_encoder_2=text_encoder_two,
-                    text_encoder_3=text_encoder_three,
-                    transformer=transformer,
+                    # vae=vae,
+                    # text_encoder=text_encoder_one,
+                    # text_encoder_2=text_encoder_two,
+                    # text_encoder_3=text_encoder_three,
+                    # transformer=transformer,
+                    vae=accelerator.unwrap_model(vae),
+                    text_encoder=accelerator.unwrap_model(text_encoder_one),
+                    text_encoder_2=accelerator.unwrap_model(text_encoder_two),
+                    text_encoder_3=accelerator.unwrap_model(text_encoder_three),
+                    transformer=accelerator.unwrap_model(transformer),
                     revision=args.revision,
                     variant=args.variant,
                     torch_dtype=weight_dtype,
@@ -2264,7 +2283,7 @@ def main(args):
                     free_memory()
 
     # Save the lora layers
-    # accelerator.wait_for_everyone()
+    accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         transformer = unwrap_model(transformer)
         if args.upcast_before_saving:
@@ -2331,7 +2350,7 @@ def main(args):
                 ignore_patterns=["step_*", "epoch_*"],
             )
 
-    # accelerator.end_training()
+    accelerator.end_training()
 
 
 if __name__ == "__main__":

@@ -318,6 +318,8 @@ def free_memory():
         torch_npu.npu.empty_cache()
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         torch.xpu.empty_cache()
+    elif hasattr(torch, "qaic") and torch.qaic.is_available():
+        torch.qaic.empty_cache()
 
 
 @contextmanager
