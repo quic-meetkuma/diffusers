@@ -1415,7 +1415,7 @@ def main(args):
     te_2_device_id = int(os.getenv("TE_2_DEVICE_ID", 0)) + rank
     te_3_device_id = int(os.getenv("TE_3_DEVICE_ID", 0)) + rank
     vae_device_id = int(os.getenv("VAE_DEVICE_ID", 0)) + rank
-    transformer_device_id = int(os.getenv("TRANSFORMER_DEVICE_ID", 2)) + rank
+    transformer_device_id = int(os.getenv("TRANSFORMER_DEVICE_ID", devices_per_rank)) + rank
     if int(os.getenv("DEBUG_LOGS", 0)) == 1:
         print(f"{te_1_device_id=}")
         print(f"{te_2_device_id=}")
