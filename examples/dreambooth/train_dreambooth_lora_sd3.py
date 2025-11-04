@@ -90,6 +90,50 @@ logger = get_logger(__name__)
 # import logging
 # logger = logging.getLogger('diffuser')
 
+
+def check_memory_usage(rank, dev_id):
+    device_str = f"qaic:{dev_id}"
+    free_mem, total_mem = torch.qaic.mem_get_info(device_str)
+    free_gb = free_mem / (1024**2)
+    total_gb = total_mem / (1024**2)
+    used_gb = total_gb - free_gb
+
+    # Calculate utilization percentage
+    util_pct = (used_gb / total_gb) * 100 if total_gb > 0 else 0
+    print(f"[Rank-{rank}]: Device {dev_id} - Used: {used_gb:.2f}MB / Total: {total_gb:.2f}MB ({util_pct:.2f}%)")
+
+def parse_device_id(env_var_name, default_value):
+    rank = int(os.getenv("LOCAL_RANK", 0))
+    world = int(os.getenv("WORLD_SIZE", 0))
+    device_id = os.getenv(env_var_name)
+    if device_id:
+        device_id = [int(dev) for dev in device_id.split(",")]
+    else:
+        device_id = [default_value]
+    for i in range(len(device_id)):
+        device_id[i] = device_id[i] * world + rank
+    return device_id
+
+def map_layers_to_devices(layers, device_ids):
+    total_layers = len(layers)
+    num_devices = len(device_ids)
+
+    base_chunk = total_layers // num_devices
+    remainder = total_layers % num_devices
+
+    layer_to_device = {}
+    start = 0
+
+    for i, device_id in enumerate(device_ids):
+        extra = 1 if i < remainder else 0
+        end = start + base_chunk + extra
+        for layer in layers[start:end]:
+            layer_to_device[layer] = device_id
+        start = end
+
+    return layer_to_device
+
+
 def save_model_card(
     repo_id: str,
     images=None,
@@ -183,46 +227,136 @@ Please adhere to the licensing terms as described [here]({license_url}).
 
 
 def load_text_encoders(class_one, class_two, class_three):
+    if torch_qaic_available:
+        device_str = "qaic"
+    else:
+        device_str = "cuda"
+    weight_dtype = torch.float16
+
+    text_encoder_one_layer_list = [
+        'text_model.embeddings',                                                                                                                                                                                                                                                                                              
+        'text_model.encoder.layers.0',
+        'text_model.encoder.layers.1',
+        'text_model.encoder.layers.2',
+        'text_model.encoder.layers.3',
+        'text_model.encoder.layers.4',
+        'text_model.encoder.layers.5',
+        'text_model.encoder.layers.6',
+        'text_model.encoder.layers.7',
+        'text_model.encoder.layers.8',
+        'text_model.encoder.layers.9',
+        'text_model.encoder.layers.10',
+        'text_model.encoder.layers.11',
+        'text_model.final_layer_norm',
+        'text_projection'
+    ]
+    text_encoder_two_layer_list = [
+        'text_model.embeddings',                                                                                                                                                                                                                                                                                              
+        'text_model.encoder.layers.0',
+        'text_model.encoder.layers.1',
+        'text_model.encoder.layers.2',
+        'text_model.encoder.layers.3',
+        'text_model.encoder.layers.4',
+        'text_model.encoder.layers.5',
+        'text_model.encoder.layers.6',
+        'text_model.encoder.layers.7',
+        'text_model.encoder.layers.8',
+        'text_model.encoder.layers.9',
+        'text_model.encoder.layers.10',
+        'text_model.encoder.layers.11',
+        'text_model.encoder.layers.12',
+        'text_model.encoder.layers.13',
+        'text_model.encoder.layers.14',
+        'text_model.encoder.layers.15',
+        'text_model.encoder.layers.16',
+        'text_model.encoder.layers.17',
+        'text_model.encoder.layers.18',
+        'text_model.encoder.layers.19',
+        'text_model.encoder.layers.20',
+        'text_model.encoder.layers.21',
+        'text_model.encoder.layers.22',
+        'text_model.encoder.layers.23',
+        'text_model.encoder.layers.24',
+        'text_model.encoder.layers.25',
+        'text_model.encoder.layers.26',
+        'text_model.encoder.layers.27',
+        'text_model.encoder.layers.28',
+        'text_model.encoder.layers.29',
+        'text_model.encoder.layers.30',
+        'text_model.encoder.layers.31',
+        'text_model.final_layer_norm',
+        'text_projection'
+    ]
+    text_encoder_three_layer_list = [
+        'shared',
+        'encoder.embed_tokens',
+        'encoder.block.0',
+        'encoder.block.1',
+        'encoder.block.2',
+        'encoder.block.3',
+        'encoder.block.4',
+        'encoder.block.5',
+        'encoder.block.6',
+        'encoder.block.7',
+        'encoder.block.8',
+        'encoder.block.9',
+        'encoder.block.10',
+        'encoder.block.11',
+        'encoder.block.12',
+        'encoder.block.13',
+        'encoder.block.14',
+        'encoder.block.15',
+        'encoder.block.16',
+        'encoder.block.17',
+        'encoder.block.18',
+        'encoder.block.19',
+        'encoder.block.20',
+        'encoder.block.21',
+        'encoder.block.22',
+        'encoder.block.23',
+        'encoder.final_layer_norm',
+        'encoder.dropout',
+    ]
+    te_1_device_id = parse_device_id("TE_1_DEVICE_ID", 0)
+    te_2_device_id = parse_device_id("TE_2_DEVICE_ID", 0)
+    te_3_device_id = parse_device_id("TE_3_DEVICE_ID", 0)
+
+    if len(te_1_device_id) == 1:
+        text_encoder_one_device_map = None
+    else:
+        text_encoder_one_device_map = map_layers_to_devices(text_encoder_one_layer_list, te_1_device_id)
+
+    if len(te_2_device_id) == 1:
+        text_encoder_two_device_map = None
+    else:
+        text_encoder_two_device_map = map_layers_to_devices(text_encoder_two_layer_list, te_2_device_id)
+
+    if len(te_3_device_id) == 1:
+        text_encoder_three_device_map = None
+    else:
+        text_encoder_three_device_map = map_layers_to_devices(text_encoder_three_layer_list, te_3_device_id)
+
     text_encoder_one = class_one.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
+        args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant,
+        device_map=text_encoder_one_device_map
     )
     text_encoder_two = class_two.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="text_encoder_2", revision=args.revision, variant=args.variant
+        args.pretrained_model_name_or_path, subfolder="text_encoder_2", revision=args.revision, variant=args.variant,
+        device_map=text_encoder_two_device_map
     )
-    text_encoder_three_device_map = {
-        'shared': 2, 
-        'encoder.embed_tokens': 2,
-        'encoder.block.0': 2,
-        'encoder.block.1': 2,
-        'encoder.block.2': 2,
-        'encoder.block.3': 2,
-        'encoder.block.4': 2,
-        'encoder.block.5': 2,
-        'encoder.block.6': 2,
-        'encoder.block.7': 2,
-        'encoder.block.8': 3,
-        'encoder.block.9': 3,
-        'encoder.block.10': 3,
-        'encoder.block.11': 3,
-        'encoder.block.12': 3,
-        'encoder.block.13': 3,
-        'encoder.block.14': 3,
-        'encoder.block.15': 3,
-        'encoder.block.16': 4,
-        'encoder.block.17': 4,
-        'encoder.block.18': 4,
-        'encoder.block.19': 4,
-        'encoder.block.20': 4,
-        'encoder.block.21': 4,
-        'encoder.block.22': 4,
-        'encoder.block.23': 4,
-        'encoder.final_layer_norm': 4,
-        'encoder.dropout': 4
-    }
     text_encoder_three = class_three.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="text_encoder_3", revision=args.revision, variant=args.variant, 
-        # device_map=text_encoder_three_device_map
+        device_map=text_encoder_three_device_map
     )
+    
+    if text_encoder_one_device_map is None:
+        text_encoder_one.to(f"{device_str}:{te_1_device_id[0]}", dtype=weight_dtype)
+
+    if text_encoder_two_device_map is None:
+        text_encoder_two.to(f"{device_str}:{te_2_device_id[0]}", dtype=weight_dtype)
+    
+    if text_encoder_three_device_map is None:
+        text_encoder_three.to(f"{device_str}:{te_3_device_id[0]}", dtype=weight_dtype)
     return text_encoder_one, text_encoder_two, text_encoder_three
 
 
@@ -1166,6 +1300,11 @@ def main(args):
 
     logging_dir = Path(args.output_dir, args.logging_dir)
 
+    if torch_qaic_available:
+        device_str = "qaic"
+    else:
+        device_str = "cuda"
+    
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
@@ -1175,6 +1314,7 @@ def main(args):
         project_config=accelerator_project_config,
         kwargs_handlers=[kwargs],
     )
+    
     # accelerator = Mock()
     # accelerator.is_local_main_process = int(os.getenv("LOCAL_RANK", 0)) == 0
     # accelerator.is_main_process = int(os.getenv("LOCAL_RANK", 0)) == 0
@@ -1187,6 +1327,14 @@ def main(args):
     # else:
     #     accelerator.device = "cuda" 
     # accelerator.sync_gradients = False
+
+    # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora transformer) to half-precision
+    # as these weights are only used for inference, keeping weights in full precision is not required.
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
 
     # Disable AMP for MPS.
     if torch.backends.mps.is_available():
@@ -1311,61 +1459,101 @@ def main(args):
     text_encoder_one, text_encoder_two, text_encoder_three = load_text_encoders(
         text_encoder_cls_one, text_encoder_cls_two, text_encoder_cls_three
     )
+    vae_layer_list = [
+        'encoder.conv_in',
+        'encoder.down_blocks.0',
+        'encoder.down_blocks.1',
+        'encoder.down_blocks.2',
+        'encoder.down_blocks.3',
+        'encoder.mid_block.attentions.0',
+        'encoder.mid_block.resnets.0',
+        'encoder.mid_block.resnets.1',
+        'encoder.conv_norm_out',
+        'encoder.conv_act',
+        'encoder.conv_out',
+        'decoder.conv_in',
+        'decoder.up_blocks.0',
+        'decoder.up_blocks.1',
+        'decoder.up_blocks.2',
+        'decoder.up_blocks.3',
+        'decoder.mid_block.attentions.0',
+        'decoder.mid_block.resnets.0',
+        'decoder.mid_block.resnets.1',
+        'decoder.conv_norm_out',
+        'decoder.conv_act',
+        'decoder.conv_out'
+    ]
+    vae_device_id = parse_device_id("VAE_DEVICE_ID", 0)
+    if len(vae_device_id) == 1:
+        vae_device_map = None
+    else:
+        vae_device_map = map_layers_to_devices(vae_layer_list, vae_device_id)
     vae = AutoencoderKL.from_pretrained(
         args.pretrained_model_name_or_path,
         subfolder="vae",
         revision=args.revision,
         variant=args.variant,
+        device_map=vae_device_map,
     )
-    transformer_device_map = {
-        'pos_embed': 6,
-        'time_text_embed': 6,
-        'context_embedder': 6,
-        'transformer_blocks.0': 6,
-        'transformer_blocks.1': 6,
-        'transformer_blocks.2': 6,
-        'transformer_blocks.3': 6,
-        'transformer_blocks.4': 6,
-        'transformer_blocks.5': 6,
-        'transformer_blocks.6': 6,
-        'transformer_blocks.7': 6,
-        'transformer_blocks.8': 6,
-        'transformer_blocks.9': 6,
-        'transformer_blocks.10': 7,
-        'transformer_blocks.11': 7,
-        'transformer_blocks.12': 7,
-        'transformer_blocks.13': 7,
-        'transformer_blocks.14': 7,
-        'transformer_blocks.15': 7,
-        'transformer_blocks.16': 7,
-        'transformer_blocks.17': 7,
-        'transformer_blocks.18': 7,
-        'transformer_blocks.19': 7,
-        'transformer_blocks.20': 8,
-        'transformer_blocks.21': 8,
-        'transformer_blocks.22': 8,
-        'transformer_blocks.23': 8,
-        'transformer_blocks.24': 8,
-        'transformer_blocks.25': 8,
-        'transformer_blocks.26': 8,
-        'transformer_blocks.27': 8,
-        'transformer_blocks.28': 8,
-        'transformer_blocks.29': 8,
-        'transformer_blocks.30': 9,
-        'transformer_blocks.31': 9,
-        'transformer_blocks.32': 9,
-        'transformer_blocks.33': 9,
-        'transformer_blocks.34': 9,
-        'transformer_blocks.35': 9,
-        'transformer_blocks.36': 9,
-        'transformer_blocks.37': 9,
-        'norm_out': 9,
-        'proj_out': 9
-    }
+    if vae_device_map is None:
+        vae.to(f"{device_str}:{vae_device_id[0]}", dtype=weight_dtype)
+
+    transformer_layer_list = [
+        'pos_embed',
+        'time_text_embed',
+        'context_embedder',
+        'transformer_blocks.0',
+        'transformer_blocks.1',
+        'transformer_blocks.2',
+        'transformer_blocks.3',
+        'transformer_blocks.4',
+        'transformer_blocks.5',
+        'transformer_blocks.6',
+        'transformer_blocks.7',
+        'transformer_blocks.8',
+        'transformer_blocks.9',
+        'transformer_blocks.10',
+        'transformer_blocks.11',
+        'transformer_blocks.12',
+        'transformer_blocks.13',
+        'transformer_blocks.14',
+        'transformer_blocks.15',
+        'transformer_blocks.16',
+        'transformer_blocks.17',
+        'transformer_blocks.18',
+        'transformer_blocks.19',
+        'transformer_blocks.20',
+        'transformer_blocks.21',
+        'transformer_blocks.22',
+        'transformer_blocks.23',
+        'transformer_blocks.24',
+        'transformer_blocks.25',
+        'transformer_blocks.26',
+        'transformer_blocks.27',
+        'transformer_blocks.28',
+        'transformer_blocks.29',
+        'transformer_blocks.30',
+        'transformer_blocks.31',
+        'transformer_blocks.32',
+        'transformer_blocks.33',
+        'transformer_blocks.34',
+        'transformer_blocks.35',
+        'transformer_blocks.36',
+        'transformer_blocks.37',
+        'norm_out',
+        'proj_out',
+    ]
+    transformer_device_id = parse_device_id("TRANSFORMER_DEVICE_ID", 1)
+    if len(transformer_device_id) == 1:
+        transformer_device_map = None
+    else:
+        transformer_device_map = map_layers_to_devices(transformer_layer_list, transformer_device_id)
     transformer = SD3Transformer2DModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="transformer", revision=args.revision, variant=args.variant, 
-        # device_map=transformer_device_map
+        device_map=transformer_device_map
     )
+    if transformer_device_map is None:
+        transformer.to(f"{device_str}:{transformer_device_id[0]}", dtype=weight_dtype)
 
     transformer.requires_grad_(False)
     vae.requires_grad_(False)
@@ -1385,54 +1573,36 @@ def main(args):
         print_stats(text_encoder_three, "text_encoder_three")
         print_stats(vae, "vae")
 
-    # For mixed precision training we cast all non-trainable weights (vae, non-lora text_encoder and non-lora transformer) to half-precision
-    # as these weights are only used for inference, keeping weights in full precision is not required.
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
-
     if torch.backends.mps.is_available() and weight_dtype == torch.bfloat16:
         # due to pytorch#99272, MPS does not yet support bfloat16.
         raise ValueError(
             "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
         )
 
-    offload_device = "cpu"
     print(f"Accelerator Distributed type: {accelerator.distributed_type}")
-    # vae.to(offload_device, dtype=weight_dtype)
-    # transformer.to(accelerator.device, dtype=weight_dtype)
-    # text_encoder_one.to(offload_device, dtype=weight_dtype)
-    # text_encoder_two.to(offload_device, dtype=weight_dtype)
-    # text_encoder_three.to(offload_device, dtype=weight_dtype)
-    devices_per_rank = int(os.getenv("DEVICES_PER_RANK", 2))
     rank = int(os.getenv("LOCAL_RANK", 0))
     world = int(os.getenv("WORLD_SIZE", 0))
     print(f"Rank: {rank}")
     print(f"World: {world}")
-    te_1_device_id = int(os.getenv("TE_1_DEVICE_ID", 0)) + rank
-    te_2_device_id = int(os.getenv("TE_2_DEVICE_ID", 0)) + rank
-    te_3_device_id = int(os.getenv("TE_3_DEVICE_ID", 0)) + rank
-    vae_device_id = int(os.getenv("VAE_DEVICE_ID", 0)) + rank
-    transformer_device_id = int(os.getenv("TRANSFORMER_DEVICE_ID", 2)) + rank
-    if int(os.getenv("DEBUG_LOGS", 0)) == 1:
-        print(f"{te_1_device_id=}")
-        print(f"{te_2_device_id=}")
-        print(f"{te_3_device_id=}")
-        print(f"{vae_device_id=}")
-        print(f"{transformer_device_id=}")
     
-    if torch_qaic_available:
-        device_str = "qaic"
-    else:
-        device_str = "cuda"
-
-    text_encoder_one.to(f"{device_str}:{te_1_device_id}", dtype=weight_dtype)
-    text_encoder_two.to(f"{device_str}:{te_2_device_id}", dtype=weight_dtype)
-    text_encoder_three.to(f"{device_str}:{te_3_device_id}", dtype=weight_dtype)
-    vae.to(f"{device_str}:{vae_device_id}", dtype=weight_dtype)
-    transformer.to(f"{device_str}:{transformer_device_id}", dtype=weight_dtype)
+    te_1_device_id = parse_device_id("TE_1_DEVICE_ID", 0)
+    te_2_device_id = parse_device_id("TE_2_DEVICE_ID", 0)
+    te_3_device_id = parse_device_id("TE_3_DEVICE_ID", 0)
+    vae_device_id = parse_device_id("VAE_DEVICE_ID", 0)
+    transformer_device_id = parse_device_id("TRANSFORMER_DEVICE_ID", 1)
+    
+    if int(os.getenv("DEBUG_LOGS", 0)) == 1:
+        print(f"[RANK-{rank}]: TE-1: {te_1_device_id=}")
+        print(f"[RANK-{rank}]: TE-2: {te_2_device_id=}")
+        print(f"[RANK-{rank}]: TE-3: {te_3_device_id=}")
+        print(f"[RANK-{rank}]: VAE: {vae_device_id=}")
+        print(f"[RANK-{rank}]: TR.: {transformer_device_id=}")
+    
+    # text_encoder_one.to(f"{device_str}:{te_1_device_id}", dtype=weight_dtype)
+    # text_encoder_two.to(f"{device_str}:{te_2_device_id}", dtype=weight_dtype)
+    # text_encoder_three.to(f"{device_str}:{te_3_device_id}", dtype=weight_dtype)
+    # vae.to(f"{device_str}:{vae_device_id}", dtype=weight_dtype)
+    # transformer.to(f"{device_str}:{transformer_device_id}", dtype=weight_dtype)
 
     if args.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
@@ -2091,6 +2261,8 @@ def main(args):
                     print(f"prompt_embeds: {prompt_embeds.shape}")
                     print(f"pooled_prompt_embeds: {pooled_prompt_embeds.shape}")
                     start = time.time()
+                    # check_memory_usage(rank, transformer_device_id)
+
                 model_pred = transformer(
                     hidden_states=noisy_model_input,
                     timestep=timesteps,
@@ -2247,19 +2419,8 @@ def main(args):
                     text_encoder_one, text_encoder_two, text_encoder_three = load_text_encoders(
                         text_encoder_cls_one, text_encoder_cls_two, text_encoder_cls_three
                     )
-                    text_encoder_one.to(weight_dtype)
-                    text_encoder_two.to(weight_dtype)
-                    text_encoder_three.to(weight_dtype)
-                    text_encoder_one.to(f"{device_str}:{te_1_device_id}", dtype=weight_dtype)
-                    text_encoder_two.to(f"{device_str}:{te_2_device_id}", dtype=weight_dtype)
-                    text_encoder_three.to(f"{device_str}:{te_3_device_id}", dtype=weight_dtype)
                 pipeline = StableDiffusion3Pipeline.from_pretrained(
                     args.pretrained_model_name_or_path,
-                    # vae=vae,
-                    # text_encoder=text_encoder_one,
-                    # text_encoder_2=text_encoder_two,
-                    # text_encoder_3=text_encoder_three,
-                    # transformer=transformer,
                     vae=accelerator.unwrap_model(vae),
                     text_encoder=accelerator.unwrap_model(text_encoder_one),
                     text_encoder_2=accelerator.unwrap_model(text_encoder_two),
