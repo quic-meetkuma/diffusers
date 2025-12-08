@@ -30,7 +30,8 @@ QAIC_VISIBLE_DEVICES=0,1,2,3,4,5,6,7,8,9 DEBUG_LOGS=1 accelerate launch --num_pr
   --validation_prompt="A photo of sks dog in a bucket" \
   --validation_epochs=1 \
   --checkpointing_steps=1 \
-  --seed="0" 
+  --seed="0" \
+  --num_inference_steps 10
 # --enable_profiling 2>&1 | tee qaic_debug_1_2_5_logs_sanjay_30_09_2025.txt
 
 
